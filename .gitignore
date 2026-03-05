@@ -1,0 +1,96 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# PYTHON
+# ──────────────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Pytest & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# ──────────────────────────────────────────────────────────────────────────────
+# VIRTUAL ENVIRONMENTS
+# ──────────────────────────────────────────────────────────────────────────────
+venv/
+ENV/
+env/
+.venv/
+
+# ──────────────────────────────────────────────────────────────────────────────
+# IDE & EDITORS
+# ──────────────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ──────────────────────────────────────────────────────────────────────────────
+# OPERATING SYSTEM
+# ──────────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PROJECT SPECIFIC (Juventus Analytics)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Input Videos (Raw footage is too large & often copyrighted)
+input/
+Input/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+
+# Output Videos (Generated annotated videos)
+Output/
+output/
+output_annotated.mp4
+*.avi
+
+# Generated Metrics (Regeneratable data)
+metrics.json
+metrics.csv
+
+# Logs
+logs/
+*.log
+
+# Environment Variables (API Keys, Configs)
+.env
+.env.local
+*.key
+*.pem

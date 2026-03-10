@@ -1,16 +1,11 @@
 """
-Juventus Sports Analytics System  v3
+Juventus Sports Analytics System  v4
 ======================================
-Full pipeline:
-  1. Pre-scan  — find the most persistent player across video
-  2. Tracking  — MIL tracker + MOG2 blob verification
-  3. Pose      — contour-fitted anthropometric model with per-joint
-                 Kalman smoothing (fluid, jitter-free motion)
-  4. Biomechanics — speed, stride, cadence, angles, energy, valgus
-  5. Risk      — rolling-window injury / fall / fatigue scoring
-  6. Rendering — gradient bones, glow joints, animated risk gauge,
-                 full-frame HUD dashboard
-  7. Export    — annotated MP4, JSON, CSV
+Tracking architecture upgrade — see architecture diagram at bottom of imports.
+
+Install on your Windows machine:
+    pip install ultralytics          # YOLO11 pose model
+    pip install opencv-python numpy pandas scipy
 """
 
 import cv2
@@ -21,8 +16,21 @@ import math
 from collections import deque
 from dataclasses import dataclass, asdict
 from typing import Optional, List, Tuple
-from scipy.signal import find_peaks
-from scipy.ndimage import uniform_filter1d
+
+try:
+    from scipy.signal import find_peaks
+    from scipy.ndimage import uniform_filter1d
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+
+try:
+    from ultralytics import YOLO as _YOLO
+    HAS_YOLO = True
+except ImportError:
+    HAS_YOLO = False
+    print("[WARNING] ultralytics not found — pip install ultralytics")
+    print("          Falling back to MOG2 blob detection.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -30,823 +38,683 @@ from scipy.ndimage import uniform_filter1d
 # ══════════════════════════════════════════════════════════════════════════════
 
 JOINT_NAMES = [
-    "head","neck",
-    "left_shoulder","right_shoulder",
-    "left_elbow","right_elbow",
-    "left_wrist","right_wrist",
-    "left_hip","right_hip",
-    "left_knee","right_knee",
-    "left_ankle","right_ankle",
-    "left_foot","right_foot",
-    "hip_center","shoulder_center",
+    "head","neck","left_shoulder","right_shoulder","left_elbow","right_elbow",
+    "left_wrist","right_wrist","left_hip","right_hip","left_knee","right_knee",
+    "left_ankle","right_ankle","left_foot","right_foot","hip_center","shoulder_center",
 ]
 
 @dataclass
 class PoseKeypoints:
-    head:            Tuple[float,float] = (0.,0.)
-    neck:            Tuple[float,float] = (0.,0.)
-    left_shoulder:   Tuple[float,float] = (0.,0.)
-    right_shoulder:  Tuple[float,float] = (0.,0.)
-    left_elbow:      Tuple[float,float] = (0.,0.)
-    right_elbow:     Tuple[float,float] = (0.,0.)
-    left_wrist:      Tuple[float,float] = (0.,0.)
-    right_wrist:     Tuple[float,float] = (0.,0.)
-    left_hip:        Tuple[float,float] = (0.,0.)
-    right_hip:       Tuple[float,float] = (0.,0.)
-    left_knee:       Tuple[float,float] = (0.,0.)
-    right_knee:      Tuple[float,float] = (0.,0.)
-    left_ankle:      Tuple[float,float] = (0.,0.)
-    right_ankle:     Tuple[float,float] = (0.,0.)
-    left_foot:       Tuple[float,float] = (0.,0.)
-    right_foot:      Tuple[float,float] = (0.,0.)
-    hip_center:      Tuple[float,float] = (0.,0.)
-    shoulder_center: Tuple[float,float] = (0.,0.)
-
+    head:(float,float)=(0.,0.); neck:(float,float)=(0.,0.)
+    left_shoulder:(float,float)=(0.,0.); right_shoulder:(float,float)=(0.,0.)
+    left_elbow:(float,float)=(0.,0.);    right_elbow:(float,float)=(0.,0.)
+    left_wrist:(float,float)=(0.,0.);    right_wrist:(float,float)=(0.,0.)
+    left_hip:(float,float)=(0.,0.);      right_hip:(float,float)=(0.,0.)
+    left_knee:(float,float)=(0.,0.);     right_knee:(float,float)=(0.,0.)
+    left_ankle:(float,float)=(0.,0.);    right_ankle:(float,float)=(0.,0.)
+    left_foot:(float,float)=(0.,0.);     right_foot:(float,float)=(0.,0.)
+    hip_center:(float,float)=(0.,0.);    shoulder_center:(float,float)=(0.,0.)
 
 @dataclass
 class PoseFrame:
-    frame_idx: int
-    timestamp: float
-    bbox:      Tuple[int,int,int,int]
-    kp:        PoseKeypoints
-
+    frame_idx:int; timestamp:float; bbox:Tuple[int,int,int,int]; kp:PoseKeypoints
 
 @dataclass
 class FrameMetrics:
-    frame_idx:         int   = 0
-    timestamp:         float = 0.
-    speed:             float = 0.
-    acceleration:      float = 0.
-    stride_length:     float = 0.
-    step_time:         float = 0.
-    cadence:           float = 0.
-    flight_time:       float = 0.
-    left_knee_angle:   float = 0.
-    right_knee_angle:  float = 0.
-    left_hip_angle:    float = 0.
-    right_hip_angle:   float = 0.
-    trunk_lean:        float = 0.
-    direction_change:  bool  = False
-    energy_expenditure:float = 0.
-    gait_symmetry:     float = 100.
-    stride_variability:float = 0.
-    fall_risk:         float = 0.
-    injury_risk:       float = 0.
-    joint_stress:      float = 0.
-    fatigue_index:     float = 0.
-    body_center_disp:  float = 0.
-    l_valgus:          float = 0.
-    r_valgus:          float = 0.
-    risk_score:        float = 0.   # 0-100 composite
-
+    frame_idx:int=0; timestamp:float=0.; speed:float=0.; acceleration:float=0.
+    stride_length:float=0.; step_time:float=0.; cadence:float=0.; flight_time:float=0.
+    left_knee_angle:float=0.; right_knee_angle:float=0.
+    left_hip_angle:float=0.;  right_hip_angle:float=0.
+    trunk_lean:float=0.; direction_change:bool=False; energy_expenditure:float=0.
+    gait_symmetry:float=100.; stride_variability:float=0.
+    fall_risk:float=0.; injury_risk:float=0.; joint_stress:float=0.
+    fatigue_index:float=0.; body_center_disp:float=0.
+    l_valgus:float=0.; r_valgus:float=0.; risk_score:float=0.
 
 @dataclass
 class PlayerSummary:
-    player_id:                int   = 1
-    total_frames:             int   = 0
-    duration_seconds:         float = 0.
-    avg_speed:                float = 0.
-    max_speed:                float = 0.
-    avg_stride_length:        float = 0.
-    avg_step_time:            float = 0.
-    avg_cadence:              float = 0.
-    avg_flight_time:          float = 0.
-    direction_change_freq:    float = 0.
-    estimated_energy_kcal_hr: float = 0.
-    gait_symmetry_pct:        float = 0.
-    stride_variability_pct:   float = 0.
-    total_distance_m:         float = 0.
-    peak_risk_score:          float = 0.
-    fall_risk_label:          str   = "Low"
-    injury_risk_label:        str   = "Low"
-    injury_risk_detail:       str   = ""
-    body_stress_label:        str   = "Low"
-    fatigue_label:            str   = "Low"
+    player_id:int=1; total_frames:int=0; duration_seconds:float=0.
+    avg_speed:float=0.; max_speed:float=0.; avg_stride_length:float=0.
+    avg_step_time:float=0.; avg_cadence:float=0.; avg_flight_time:float=0.
+    direction_change_freq:float=0.; estimated_energy_kcal_hr:float=0.
+    gait_symmetry_pct:float=0.; stride_variability_pct:float=0.
+    total_distance_m:float=0.; peak_risk_score:float=0.
+    fall_risk_label:str="Low"; injury_risk_label:str="Low"
+    injury_risk_detail:str=""; body_stress_label:str="Low"; fatigue_label:str="Low"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MATH HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def angle_3pts(a, b, c) -> float:
-    ba = np.array(a) - np.array(b)
-    bc = np.array(c) - np.array(b)
-    n  = np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-9
-    return float(np.degrees(np.arccos(np.clip(np.dot(ba, bc)/n, -1, 1))))
+def angle_3pts(a,b,c)->float:
+    ba=np.array(a)-np.array(b); bc=np.array(c)-np.array(b)
+    n=np.linalg.norm(ba)*np.linalg.norm(bc)+1e-9
+    return float(np.degrees(np.arccos(np.clip(np.dot(ba,bc)/n,-1,1))))
 
-def dist2d(p1, p2) -> float:
-    return math.hypot(p1[0]-p2[0], p1[1]-p2[1])
+def dist2d(p1,p2)->float: return math.hypot(p1[0]-p2[0],p1[1]-p2[1])
 
-def smooth_arr(arr, w=5):
-    return uniform_filter1d(np.array(arr, dtype=float), size=w)
+def smooth_arr(arr,w=5):
+    a=np.array(arr,dtype=float)
+    if HAS_SCIPY: return uniform_filter1d(a,size=w)
+    return np.convolve(a,np.ones(w)/w,mode='same')
 
-def clamp01(x): return float(np.clip(x, 0., 1.))
+def clamp01(x): return float(np.clip(x,0.,1.))
 
-def lerp_color(c1, c2, t):
-    """Linearly interpolate two BGR colours."""
-    t = clamp01(t)
-    return tuple(int(c1[i]*(1-t) + c2[i]*t) for i in range(3))
+def lerp_color(c1,c2,t):
+    t=clamp01(t); return tuple(int(c1[i]*(1-t)+c2[i]*t) for i in range(3))
 
-def risk_color(score_0_100):
-    """Green → Yellow → Red."""
-    t = clamp01(score_0_100 / 100.)
-    if t < 0.5:
-        return lerp_color((0,200,0), (0,200,255), t*2)
-    else:
-        return lerp_color((0,200,255), (0,0,230), (t-0.5)*2)
+def risk_color(s):
+    t=clamp01(s/100.)
+    return lerp_color((0,200,0),(0,200,255),t*2) if t<0.5 else lerp_color((0,200,255),(0,0,230),(t-.5)*2)
 
+def bbox_iou(a,b)->float:
+    ax,ay,aw,ah=a; bx,by,bw,bh=b
+    ix=max(0,min(ax+aw,bx+bw)-max(ax,bx)); iy=max(0,min(ay+ah,by+bh)-max(ay,by))
+    inter=ix*iy; return inter/(aw*ah+bw*bh-inter+1e-6)
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  PER-JOINT KALMAN SMOOTHER
-#  Keeps a 1-D position+velocity Kalman filter for each joint coordinate.
-#  This gives smooth, physically plausible motion even if the bbox jitters.
-# ══════════════════════════════════════════════════════════════════════════════
+def bbox_centre(bbox): x,y,w,h=bbox; return (x+w/2.,y+h/2.)
 
-class JointKalman:
-    """Scalar Kalman filter for one joint coordinate (x or y)."""
-    def __init__(self, process_noise=1.5, obs_noise=8.0):
-        self.x  = None   # state: position
-        self.v  = 0.     # state: velocity
-        self.P  = np.array([[100.,0.],[0.,100.]])
-        self.Q  = np.diag([process_noise, process_noise*2])
-        self.R  = obs_noise
-        self.F  = np.array([[1.,1.],[0.,1.]])
-        self.H  = np.array([[1.,0.]])
-
-    def update(self, z: float) -> float:
-        if self.x is None:
-            self.x = z; return z
-        # Predict
-        state  = np.array([self.x, self.v])
-        state  = self.F @ state
-        P_pred = self.F @ self.P @ self.F.T + self.Q
-        # Update
-        y  = z - (self.H @ state)[0]
-        S  = (self.H @ P_pred @ self.H.T)[0,0] + self.R
-        K  = (P_pred @ self.H.T) / S
-        state = state + (K * y).flatten()
-        self.P = (np.eye(2) - np.outer(K.flatten(), self.H)) @ P_pred
-        self.x, self.v = float(state[0]), float(state[1])
-        return self.x
-
-
-class PoseKalmanSmoother:
-    """One JointKalman per joint, per axis."""
-    def __init__(self):
-        self._kx: dict[str, JointKalman] = {}
-        self._ky: dict[str, JointKalman] = {}
-
-    def smooth(self, kp: PoseKeypoints) -> PoseKeypoints:
-        out = PoseKeypoints()
-        for name in JOINT_NAMES:
-            raw = getattr(kp, name)
-            if name not in self._kx:
-                self._kx[name] = JointKalman()
-                self._ky[name] = JointKalman()
-            sx = self._kx[name].update(raw[0])
-            sy = self._ky[name].update(raw[1])
-            object.__setattr__(out, name, (sx, sy))
-        return out
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  POSE ESTIMATOR
-#  Uses the player contour mask (not just the bbox rectangle) to fit joint
-#  positions anatomically — shoulders snap to the widest upper-body point,
-#  waist to the narrowest, hips to the widest lower-body point, etc.
-#  Limb swing is driven by the actual horizontal displacement of the bbox
-#  centre, giving motion-reactive gait rather than a fixed-period oscillator.
-# ══════════════════════════════════════════════════════════════════════════════
-
-class ContourPoseEstimator:
-    """
-    Fit 18 body keypoints to the player silhouette.
-    Falls back to anthropometric proportions when the contour is unavailable.
-    """
-
-    # Anthropometric vertical proportions (fraction of bbox height, top=0)
-    _VP = dict(head=0.04, neck=0.11, shoulder=0.20, elbow=0.34,
-               wrist=0.46, hip=0.54, knee=0.73, ankle=0.91, foot=0.99)
-
-    def __init__(self):
-        self._prev_cx     = None   # previous bbox centre-x for swing detection
-        self._displacement_history = deque(maxlen=8)
-
-    def estimate(self, frame, bbox, timestamp: float,
-                 running_speed: float = 0.) -> PoseKeypoints:
-        x, y, w, h = bbox
-        cx = x + w / 2.
-
-        # ── Measure actual lateral displacement this frame ─────────────────
-        disp = 0.
-        if self._prev_cx is not None:
-            disp = cx - self._prev_cx
-        self._prev_cx = cx
-        self._displacement_history.append(abs(disp))
-        motion_mag = float(np.mean(self._displacement_history)) if self._displacement_history else 0.
-
-        # ── Try to fit shoulders / waist / hips from the contour ──────────
-        col_widths = self._column_widths(frame, bbox)
-        shoulder_x_half, hip_x_half = self._fit_body_widths(col_widths, w, h)
-
-        # ── Gait phase from accumulated displacement ───────────────────────
-        # Use distance travelled (pixels) to drive a continuous phase,
-        # so the skeleton actually syncs with the person's gait.
-        dist_sum = sum(self._displacement_history)
-        phase = (dist_sum / max(w * 0.18, 4.)) * math.pi  # ~half-step per stride_width/18
-
-        # Swing amplitude: scales with speed
-        swing = clamp01(running_speed / 9.)
-        arm_sw = swing * 0.10 * w
-        leg_sw = swing * 0.08 * w
-        k_lift = swing * 0.08 * h
-
-        def vy(f): return y + f * h
-
-        kp = PoseKeypoints()
-
-        # Head & neck
-        kp.head  = (cx, vy(self._VP["head"]))
-        kp.neck  = (cx, vy(self._VP["neck"]))
-
-        # Shoulders
-        ls = (cx - shoulder_x_half, vy(self._VP["shoulder"]))
-        rs = (cx + shoulder_x_half, vy(self._VP["shoulder"]))
-        kp.left_shoulder  = ls
-        kp.right_shoulder = rs
-        kp.shoulder_center = ((ls[0]+rs[0])/2., (ls[1]+rs[1])/2.)
-
-        # Arms — opposite phase to legs
-        aoff = arm_sw * math.sin(phase)
-        le   = (ls[0] - aoff, vy(self._VP["elbow"]))
-        re   = (rs[0] + aoff, vy(self._VP["elbow"]))
-        kp.left_elbow  = le
-        kp.right_elbow = re
-        kp.left_wrist  = (le[0] - aoff * 0.55, vy(self._VP["wrist"]))
-        kp.right_wrist = (re[0] + aoff * 0.55, vy(self._VP["wrist"]))
-
-        # Hips
-        lh = (cx - hip_x_half, vy(self._VP["hip"]))
-        rh = (cx + hip_x_half, vy(self._VP["hip"]))
-        kp.left_hip   = lh
-        kp.right_hip  = rh
-        kp.hip_center = ((lh[0]+rh[0])/2., (lh[1]+rh[1])/2.)
-
-        # Legs
-        loff = leg_sw * math.sin(phase)
-        roff = -loff
-        ll   = k_lift * max(0., math.sin(phase))
-        rl   = k_lift * max(0., -math.sin(phase))
-
-        kp.left_knee  = (lh[0] + loff, vy(self._VP["knee"])  - ll)
-        kp.right_knee = (rh[0] + roff, vy(self._VP["knee"])  - rl)
-        kp.left_ankle = (lh[0] + loff * 0.45, vy(self._VP["ankle"]) - ll * 0.5)
-        kp.right_ankle= (rh[0] + roff * 0.45, vy(self._VP["ankle"]) - rl * 0.5)
-        kp.left_foot  = (kp.left_ankle[0]  + w * 0.07, vy(self._VP["foot"]))
-        kp.right_foot = (kp.right_ankle[0] + w * 0.07, vy(self._VP["foot"]))
-
-        return kp
-
-    # ── Contour fitting helpers ────────────────────────────────────────────
-
-    def _column_widths(self, frame, bbox) -> Optional[np.ndarray]:
-        """Return horizontal width of the player mask at each scanline."""
-        bx, by, bw, bh = bbox
-        H, W = frame.shape[:2]
-        bx2 = min(bx+bw, W); by2 = min(by+bh, H)
-        bx  = max(0, bx);    by  = max(0, by)
-        if bx2-bx < 5 or by2-by < 5:
-            return None
-        crop = frame[by:by2, bx:bx2]
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, 0, 255,
-                                cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        widths = np.array([np.sum(mask[r] > 0) for r in range(mask.shape[0])],
-                          dtype=float)
-        # smooth to remove noise
-        return smooth_arr(widths, w=max(3, bh//20)) if len(widths) > 5 else None
-
-    def _fit_body_widths(self, col_widths, bw, bh):
-        """Infer shoulder_half and hip_half widths from the silhouette profile."""
-        default_sh  = bw * 0.29
-        default_hip = bw * 0.17
-        if col_widths is None or len(col_widths) < 10:
-            return default_sh, default_hip
-
-        n = len(col_widths)
-        # Upper body: rows 15%–40% of height
-        upper = col_widths[int(n*0.15):int(n*0.40)]
-        # Lower body: rows 48%–68% of height
-        lower = col_widths[int(n*0.48):int(n*0.68)]
-
-        sh  = float(np.max(upper)) / 2. if len(upper) else default_sh
-        hip = float(np.max(lower)) / 2. if len(lower) else default_hip
-
-        # Clamp to sane range
-        sh  = float(np.clip(sh,  bw*0.18, bw*0.42))
-        hip = float(np.clip(hip, bw*0.10, bw*0.32))
-        return sh, hip
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  BLOB DETECTOR  (shared utility)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def get_human_blobs(frame, bg_sub, min_area=2500, max_area=80000):
-    """
-    Detect human-shaped motion blobs with strict quality filters:
-      - Tighter aspect ratio (1.4-4.5): real standing humans only
-      - Minimum fill ratio > 0.28: rejects shadows, fence fragments, L-shapes
-      - Non-maximum suppression (IoU > 0.35): merges split detections of the
-        same person so one player never appears as two separate blobs
-    """
-    mask = bg_sub.apply(frame)
-    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    k7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k7, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  k3, iterations=1)
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    candidates = []
-    for cnt in cnts:
-        area = cv2.contourArea(cnt)
-        if not (min_area <= area <= max_area):
-            continue
-        bx, by, bw, bh = cv2.boundingRect(cnt)
-        aspect = bh / (bw + 1e-6)
-        if not (1.4 <= aspect <= 4.5):
-            continue
-        fill = area / (bw * bh + 1e-6)
-        if fill < 0.28:
-            continue
-        candidates.append((bx, by, bw, bh, area))
-    if not candidates:
-        return []
-    # NMS: sort largest first, suppress boxes that overlap heavily
-    candidates.sort(key=lambda c: c[4], reverse=True)
-    kept, suppressed = [], set()
-    for i, ci in enumerate(candidates):
-        if i in suppressed:
-            continue
-        kept.append(ci[:4])
-        for j, cj in enumerate(candidates):
-            if j <= i or j in suppressed:
-                continue
-            if blob_iou(ci[:4], cj[:4]) > 0.35:
-                suppressed.add(j)
-    return kept
-
-def blob_iou(a, b) -> float:
-    ax,ay,aw,ah = a; bx,by,bw,bh = b
-    ix = max(0, min(ax+aw,bx+bw)-max(ax,bx))
-    iy = max(0, min(ay+ah,by+bh)-max(ay,by))
-    inter = ix*iy
-    return inter/(aw*ah+bw*bh-inter+1e-6)
-
-def crop_hist(frame, bbox):
-    bx,by,bw,bh = bbox
-    H,W = frame.shape[:2]
-    bx,by=max(0,bx),max(0,by); bw=min(bw,W-bx); bh=min(bh,H-by)
+def crop_hist(frame,bbox):
+    bx,by,bw,bh=[int(v) for v in bbox]; H,W=frame.shape[:2]
+    bx,by=max(0,bx),max(0,by); bw,bh=min(bw,W-bx),min(bh,H-by)
     if bw<5 or bh<5: return None
-    hsv  = cv2.cvtColor(frame[by:by+bh, bx:bx+bw], cv2.COLOR_BGR2HSV)
-    hist = cv2.calcHist([hsv],[0,1],None,[18,16],[0,180,0,256])
-    cv2.normalize(hist, hist)
-    return hist
+    hsv=cv2.cvtColor(frame[by:by+bh,bx:bx+bw],cv2.COLOR_BGR2HSV)
+    hist=cv2.calcHist([hsv],[0,1],None,[18,16],[0,180,0,256])
+    cv2.normalize(hist,hist); return hist
+
+def hist_sim(h1,h2)->float:
+    if h1 is None or h2 is None: return 0.
+    return float(cv2.compareHist(h1,h2,cv2.HISTCMP_CORREL))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PRE-SCAN: find the most persistent player
+#  KALMAN TRACK  — per-player state: [cx,cy,w,h, vx,vy,vw,vh]
 # ══════════════════════════════════════════════════════════════════════════════
 
-def select_primary_player(video_path: str, sample_step: int = 6,
-                           min_area: int = 1200, max_area: int = 70000) -> Optional[dict]:
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened(): return None
+class KalmanTrack:
+    _next_id=1
+    F=np.array([[1,0,0,0,1,0,0,0],[0,1,0,0,0,1,0,0],[0,0,1,0,0,0,1,0],[0,0,0,1,0,0,0,1],
+                [0,0,0,0,1,0,0,0],[0,0,0,0,0,1,0,0],[0,0,0,0,0,0,1,0],[0,0,0,0,0,0,0,1]],dtype=float)
+    H=np.eye(4,8)
 
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    bg    = cv2.createBackgroundSubtractorMOG2(history=300, varThreshold=36,
-                                                detectShadows=False)
-    tracks: List[dict] = []
-    MAX_GAP = max(sample_step*5, 30)
-    frame_idx = 0
-    print(f"[PRE-SCAN] Scanning {total} frames (step={sample_step})…")
+    def __init__(self,bbox,frame,conf=1.0):
+        self.id=KalmanTrack._next_id; KalmanTrack._next_id+=1
+        cx,cy=bbox_centre(bbox); w,h=bbox[2],bbox[3]
+        self.x=np.array([cx,cy,w,h,0.,0.,0.,0.],dtype=float)
+        self.P=np.diag([10.,10.,10.,10.,100.,100.,10.,10.])
+        self.Q=np.diag([1.,1.,1.,1.,.5,.5,.2,.2])
+        self.R=np.diag([4.,4.,10.,10.])
+        self.conf=conf; self.hit_streak=1; self.missed=0; self.age=1
+        self.ref_hist=crop_hist(frame,bbox); self.last_bbox=bbox
+        self.trajectory=deque(maxlen=30); self.trajectory.append(bbox_centre(bbox))
+        self._yolo_kp=None
 
-    while True:
-        ret, frame = cap.read()
-        if not ret: break
-        if frame_idx % sample_step == 0:
-            blobs = get_human_blobs(frame, bg, min_area, max_area)
-            matched = set()
-            for blob in blobs:
-                bx,by,bw,bh = blob
-                best_t, best_s = None, 0.
-                for ti, tr in enumerate(tracks):
-                    if ti in matched: continue
-                    if frame_idx - tr["last_frame"] > MAX_GAP: continue
-                    iou = blob_iou(blob, tr["last_bbox"])
-                    rw,rh = tr["mean_size"]
-                    size_sim = min(bw*bh,rw*rh)/(max(bw*bh,rw*rh)+1e-6)
-                    score = iou*0.7+size_sim*0.3
-                    if score>best_s and (iou>0.10 or size_sim>0.55):
-                        best_s,best_t = score,ti
-                h = crop_hist(frame, blob)
-                if best_t is not None:
-                    tr = tracks[best_t]; tr["frames"]+=1
-                    if h is not None: tr["hists"].append(h)
-                    n=tr["frames"]; pw,ph=tr["mean_size"]
-                    tr["mean_size"]=((pw*(n-1)+bw)/n,(ph*(n-1)+bh)/n)
-                    tr["last_bbox"]=blob; tr["last_frame"]=frame_idx
-                    matched.add(best_t)
-                else:
-                    tracks.append({"frames":1,"hists":[h] if h is not None else [],
-                                   "mean_size":(float(bw),float(bh)),
-                                   "last_bbox":blob,"last_frame":frame_idx,
-                                   "seed_bbox":blob,"seed_frame":frame_idx})
-        frame_idx += 1
-    cap.release()
+    def predict(self):
+        self.x=self.F@self.x; self.P=self.F@self.P@self.F.T+self.Q
+        self.x[2]=max(1.,self.x[2]); self.x[3]=max(1.,self.x[3])
+        self.age+=1; self.missed+=1; return self.get_bbox()
 
-    if not tracks: return None
-    best = max(tracks, key=lambda t: t["frames"])
-    print(f"[PRE-SCAN] Best track: {best['frames']} hits, seed={best['seed_bbox']}")
-    mean_hist = None
-    if best["hists"]:
-        stacked = np.mean(best["hists"], axis=0).astype(np.float32)
-        cv2.normalize(stacked, stacked); mean_hist = stacked
-    return {"hist":mean_hist,"size":best["mean_size"],
-            "seed_bbox":best["seed_bbox"],"seed_frame":best["seed_frame"]}
+    def update(self,bbox,frame,conf=1.0):
+        cx,cy=bbox_centre(bbox); z=np.array([cx,cy,bbox[2],bbox[3]],dtype=float)
+        S=self.H@self.P@self.H.T+self.R; K=self.P@self.H.T@np.linalg.inv(S)
+        self.x=self.x+K@(z-self.H@self.x); self.P=(np.eye(8)-K@self.H)@self.P
+        self.conf=conf; self.hit_streak+=1; self.missed=0; self.last_bbox=bbox
+        self.trajectory.append(bbox_centre(bbox))
+        nh=crop_hist(frame,bbox)
+        if nh is not None and self.ref_hist is not None:
+            self.ref_hist=(0.92*self.ref_hist+0.08*nh).astype(np.float32)
+            cv2.normalize(self.ref_hist,self.ref_hist)
+        elif nh is not None: self.ref_hist=nh
+
+    def get_bbox(self)->Tuple[int,int,int,int]:
+        cx,cy,w,h=self.x[:4]; return (int(cx-w/2),int(cy-h/2),int(w),int(h))
+
+    def reactivate(self,bbox,frame):
+        cx,cy=bbox_centre(bbox); self.x[:4]=[cx,cy,bbox[2],bbox[3]]
+        self.missed=0; self.hit_streak=1; self.last_bbox=bbox
+        nh=crop_hist(frame,bbox)
+        if nh is not None: self.ref_hist=nh
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  INTERACTIVE PLAYER PICKER
-#  Opens the first clear frame, shows all detected blobs numbered, and waits
-#  for the user to click on the player they want to track.  Returns the same
-#  primary_info dict that select_primary_player() returns.
+#  DETECTION LAYER  — YOLO first, MOG2 blob fallback
 # ══════════════════════════════════════════════════════════════════════════════
 
-def pick_player_interactive(video_path: str,
-                             min_area: int = 2500,
-                             max_area: int = 80000) -> Optional[dict]:
-    """
-    Interactive player selector.
-    Warms up MOG2, finds the frame with the most clean blobs, shows it
-    in a window and waits for the user to click a player.
-    Returns a primary_info dict for PlayerTracker.
-    """
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise FileNotFoundError(video_path)
+class DetectionLayer:
+    def __init__(self,model_size="m"):
+        self._yolo=None
+        self._bg=cv2.createBackgroundSubtractorMOG2(history=400,varThreshold=40,detectShadows=False)
+        self._mode="blob"
+        if HAS_YOLO:
+            try:
+                mn=f"yolo11{model_size}-pose.pt"
+                print(f"[DETECT] Loading {mn} …")
+                self._yolo=_YOLO(mn)
+                self._mode="yolo"
+                print("[DETECT] YOLO pose model loaded.")
+            except Exception as e:
+                print(f"[DETECT] YOLO failed ({e}) — blob fallback.")
 
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    W     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    H     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    bg    = cv2.createBackgroundSubtractorMOG2(history=300, varThreshold=36,
-                                               detectShadows=False)
+    @property
+    def mode(self): return self._mode
 
-    # ── Warm-up: read frames and keep (frame, blobs, index) per sampled frame
-    WARMUP = min(120, total // 3)
-    candidates = []   # list of (frame_ndarray, blobs, frame_index)
+    def detect(self,frame)->List[dict]:
+        return self._yolo_detect(frame) if self._mode=="yolo" else self._blob_detect(frame)
 
-    for fi in range(WARMUP):
-        ret, frame = cap.read()
-        if not ret:
-            break
-        blobs = get_human_blobs(frame, bg, min_area, max_area)
-        if blobs:
-            candidates.append((frame.copy(), blobs, fi))
+    def _yolo_detect(self,frame)->List[dict]:
+        res=self._yolo(frame,verbose=False,conf=0.25)[0]; dets=[]
+        if res.boxes is None or len(res.boxes)==0: return dets
+        for i,box in enumerate(res.boxes):
+            x1,y1,x2,y2=box.xyxy[0].cpu().numpy()
+            bw,bh=x2-x1,y2-y1
+            if bh<bw*0.8: continue
+            bbox=(int(x1),int(y1),int(bw),int(bh))
+            conf=float(box.conf[0].cpu()); kp=None
+            if res.keypoints is not None and i<len(res.keypoints.xy):
+                kpxy=res.keypoints.xy[i].cpu().numpy()
+                kpc=res.keypoints.conf[i].cpu().numpy()
+                kpxy[kpc<0.3]=0.; kp=kpxy
+            dets.append({'bbox':bbox,'conf':conf,'kp':kp})
+        return dets
 
-    cap.release()
-
-    if not candidates:
-        print("[PICKER] No blobs detected — falling back to auto-select.")
-        return select_primary_player(video_path)
-
-    # Pick the entry with the most blobs (most players visible at once)
-    best_frame, best_blobs, best_fi = max(candidates, key=lambda c: len(c[1]))
-
-    # ── Build display ─────────────────────────────────────────────────────────
-    display = best_frame.copy()
-    # Slight darkening so highlights pop
-    display = cv2.addWeighted(display, 0.65, np.zeros_like(display), 0.35, 0)
-
-    COLORS = [
-        (0,255,180),(0,140,255),(255,215,0),(0,200,255),
-        (180,0,255),(0,255,80),(255,80,80),(80,255,255),
-    ]
-    for i, (bx, by, bw, bh) in enumerate(best_blobs):
-        col = COLORS[i % len(COLORS)]
-        # Thicker highlight box
-        cv2.rectangle(display, (bx, by), (bx+bw, by+bh), col, 3, cv2.LINE_AA)
-        # Number badge centred above box
-        label = str(i + 1)
-        lw, lh = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
-        bx_badge = bx + bw//2 - lw//2 - 6
-        by_badge = max(0, by - 34)
-        cv2.rectangle(display, (bx_badge, by_badge),
-                      (bx_badge + lw + 12, by_badge + 28), col, -1)
-        cv2.putText(display, label, (bx_badge + 6, by_badge + 22),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2, cv2.LINE_AA)
-
-    # Instruction banner
-    BANNER_H = 52
-    banner = np.full((BANNER_H, W, 3), 15, np.uint8)
-    cv2.putText(banner,
-                "CLICK the player to track   |   ESC = auto-select",
-                (W//2 - 255, 34),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.68, (255, 215, 0), 1, cv2.LINE_AA)
-    display = np.vstack([banner, display])
-
-    # ── Mouse callback ────────────────────────────────────────────────────────
-    chosen = [None]   # will hold the selected (bx,by,bw,bh) tuple
-
-    def on_click(event, cx, cy, flags, param):
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
-        adj_y = cy - BANNER_H
-        if adj_y < 0:
-            return
-        # Check each blob
-        for blob in best_blobs:
-            bx, by, bw, bh = blob
-            if bx <= cx <= bx + bw and by <= adj_y <= by + bh:
-                chosen[0] = blob
-                return
-        # Outside all blobs — pick the nearest centre
-        chosen[0] = min(best_blobs,
-                        key=lambda b: math.hypot(cx - (b[0]+b[2]/2),
-                                                 adj_y - (b[1]+b[3]/2)))
-
-    cv2.namedWindow("Select Player", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Select Player", min(W, 1280), min(H + BANNER_H, 800))
-    cv2.setMouseCallback("Select Player", on_click)
-
-    print(f"\n[PICKER] {len(best_blobs)} player(s) detected.")
-    print("[PICKER] Click on the player to track.  ESC = auto-select.\n")
-
-    while True:
-        cv2.imshow("Select Player", display)
-        key = cv2.waitKey(20) & 0xFF
-        if chosen[0] is not None or key == 27:
-            break
-
-    cv2.destroyAllWindows()
-
-    if chosen[0] is None:
-        print("[PICKER] ESC pressed — falling back to auto-select.")
-        return select_primary_player(video_path)
-
-    blob = chosen[0]
-    bx, by, bw, bh = blob
-    num  = best_blobs.index(blob) + 1
-    hist = crop_hist(best_frame, blob)
-    print(f"[PICKER] Player {num} selected — bbox={blob}")
-
-    return {
-        "hist":       hist,
-        "size":       (float(bw), float(bh)),
-        "seed_bbox":  blob,
-        "seed_frame": best_fi,    # integer index, no numpy comparison needed
-    }
+    def _blob_detect(self,frame)->List[dict]:
+        mask=self._bg.apply(frame)
+        k7=cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(7,7))
+        k3=cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(3,3))
+        mask=cv2.morphologyEx(mask,cv2.MORPH_CLOSE,k7,iterations=2)
+        mask=cv2.morphologyEx(mask,cv2.MORPH_OPEN,k3,iterations=1)
+        cnts,_=cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+        cands=[]
+        for cnt in cnts:
+            area=cv2.contourArea(cnt)
+            if not (2000<=area<=90000): continue
+            bx,by,bw,bh=cv2.boundingRect(cnt)
+            if not (1.3<=bh/(bw+1e-6)<=5.0): continue
+            fill=area/(bw*bh+1e-6)
+            if fill<0.25: continue
+            cands.append({'bbox':(bx,by,bw,bh),'conf':fill,'kp':None,'area':area})
+        cands.sort(key=lambda c:c['area'],reverse=True)
+        kept,sup=[], set()
+        for i,ci in enumerate(cands):
+            if i in sup: continue
+            kept.append(ci)
+            for j,cj in enumerate(cands):
+                if j<=i or j in sup: continue
+                if bbox_iou(ci['bbox'],cj['bbox'])>0.40: sup.add(j)
+        return kept
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SINGLE-TARGET TRACKER
+#  SCENE-CHANGE DETECTOR
 # ══════════════════════════════════════════════════════════════════════════════
 
-class PlayerTracker:
-    _PENDING  = "pending"
-    _TRACKING = "tracking"
-    _LOST     = "lost"
+class SceneChangeDetector:
+    def __init__(self,threshold=0.45): self._prev=None; self._thr=threshold
+    def is_cut(self,frame)->bool:
+        gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+        hist=cv2.calcHist([gray],[0],None,[64],[0,256]); cv2.normalize(hist,hist)
+        if self._prev is None: self._prev=hist; return False
+        score=float(cv2.compareHist(self._prev,hist,cv2.HISTCMP_CORREL))
+        self._prev=hist; return score<self._thr
 
-    def __init__(self, primary_info: dict,
-                 min_area=1200, max_area=70000,
-                 iou_thr=0.12, hist_thr=0.38, patience=120):
-        self.min_a=min_area; self.max_a=max_area
-        self.iou_thr=iou_thr; self.hist_thr=hist_thr; self.patience=patience
-        self._ref_hist  = primary_info["hist"]
-        self._ref_size  = primary_info["size"]
-        self._seed_bbox = primary_info["seed_bbox"]
-        self._seed_frame= primary_info["seed_frame"]
-        self.bg = cv2.createBackgroundSubtractorMOG2(
-            history=300,varThreshold=36,detectShadows=False)
-        self._state=self._PENDING; self._mil=None
-        self._smooth_box=None; self._alpha=0.30
-        self._lost_count=0; self._frame_idx=0
 
-    def update(self, frame):
-        blobs = get_human_blobs(frame, self.bg, self.min_a, self.max_a)
-        if self._state==self._PENDING:   r=self._pending(frame,blobs)
-        elif self._state==self._TRACKING:r=self._track(frame,blobs)
-        else:                            r=self._reacquire(frame,blobs)
-        self._frame_idx+=1; return r
+# ══════════════════════════════════════════════════════════════════════════════
+#  BYTETRACKER  — two-stage association, handles occlusion via Kalman + TTL
+# ══════════════════════════════════════════════════════════════════════════════
 
-    def _pending(self, frame, blobs):
-        if self._frame_idx < self._seed_frame: return None
-        best,bs = None,-1.
-        for b in blobs:
-            iou=blob_iou(b,self._seed_bbox); hs=self._hsim(frame,b)
-            s=iou*0.5+hs*0.5
-            if s>bs: bs,best=s,b
-        if best is None and blobs:
-            best=max(blobs,key=lambda b:self._hsim(frame,b))
-        if best:
-            self._init_mil(frame,best); self._upd_ref(frame,best)
-            self._smooth_box=np.array(best,float)
-            self._state=self._TRACKING
-            print(f"[TRACKER] Locked at frame {self._frame_idx}, bbox={best}")
-            return self._emit(best)
-        return None
+class ByteTracker:
+    HIGH_THRESH=0.50; LOW_THRESH=0.20
+    IOU_HIGH=0.30;    IOU_LOW=0.15;   IOU_LOST=0.20
+    MIN_HITS=2;       LOST_TTL=60
 
-    def _track(self, frame, blobs):
-        ok,mbox=self._mil.update(frame)
-        mbox=tuple(int(v) for v in mbox) if ok else None
-        best,bs=self._best_blob(mbox,blobs,frame)
-        if best:
-            self._init_mil(frame,best); self._upd_ref(frame,best)
-            self._lost_count=0; return self._emit(best)
-        if mbox and ok:
-            self._lost_count=0; return self._emit(mbox)
-        self._state=self._LOST; self._lost_count=0
-        print(f"[TRACKER] Lost at frame {self._frame_idx}")
-        return None
+    def __init__(self):
+        self.active_tracks:List[KalmanTrack]=[]
+        self.lost_tracks:List[KalmanTrack]=[]
 
-    def _reacquire(self, frame, blobs):
-        self._lost_count+=1
-        ht=max(0.22, self.hist_thr-self._lost_count*0.0008)
-        best,bs=None,-1.
-        for b in blobs:
-            bx,by,bw,bh=b; rw,rh=self._ref_size
-            ss=min(bw*bh,rw*rh)/(max(bw*bh,rw*rh)+1e-6)
-            if ss<0.25: continue
-            hs=self._hsim(frame,b); sc=hs*0.70+ss*0.30
-            if hs>=ht and sc>bs: bs,best=sc,b
-        if best:
-            self._init_mil(frame,best); self._upd_ref(frame,best)
-            self._smooth_box=np.array(best,float)
-            self._state=self._TRACKING; self._lost_count=0
-            print(f"[TRACKER] Re-acquired at frame {self._frame_idx}")
-            return self._emit(best)
-        if self._lost_count>=self.patience and blobs:
-            fb=max(blobs,key=lambda b:self._hsim(frame,b))
-            if self._hsim(frame,fb)>0.20:
-                self._init_mil(frame,fb); self._smooth_box=np.array(fb,float)
-                self._state=self._TRACKING; self._lost_count=0
-                return self._emit(fb)
-        return None
+    def update(self,detections:List[dict],frame)->List[KalmanTrack]:
+        for t in self.active_tracks+self.lost_tracks: t.predict()
+        high=[d for d in detections if d['conf']>=self.HIGH_THRESH]
+        low =[d for d in detections if self.LOW_THRESH<=d['conf']<self.HIGH_THRESH]
 
-    def _best_blob(self, mbox, blobs, frame):
-        if not blobs: return None,0.
-        best,bs=None,0.
-        for b in blobs:
-            iou=blob_iou(mbox,b) if mbox else 0.
-            hs=self._hsim(frame,b); sc=iou*0.60+hs*0.40
-            if (iou>=self.iou_thr or hs>=self.hist_thr) and sc>bs:
-                bs,best=sc,b
-        return best,bs
+        unm_t, unm_h = self._associate(self.active_tracks, high, frame, self.IOU_HIGH)
+        still_unm, _ = self._associate(unm_t, low, frame, self.IOU_LOW)
+        self._associate(self.lost_tracks, low, frame, self.IOU_LOST, reactivate=True)
 
-    def _hsim(self, frame, bbox) -> float:
-        if self._ref_hist is None: return 0.
-        h=crop_hist(frame,bbox)
-        if h is None: return 0.
-        return float(cv2.compareHist(self._ref_hist,h,cv2.HISTCMP_CORREL))
+        for t in still_unm:
+            t.hit_streak=0
+            if t not in self.lost_tracks: self.lost_tracks.append(t)
+            if t in self.active_tracks: self.active_tracks.remove(t)
 
-    def _upd_ref(self, frame, bbox):
-        h=crop_hist(frame,bbox)
-        if h is not None:
-            self._ref_hist=(0.85*(self._ref_hist if self._ref_hist is not None else h)
-                            +0.15*h).astype(np.float32)
-            cv2.normalize(self._ref_hist,self._ref_hist)
-        bx,by,bw,bh=bbox; rw,rh=self._ref_size
-        self._ref_size=(rw*0.9+bw*0.1, rh*0.9+bh*0.1)
+        for d in unm_h:
+            self.active_tracks.append(KalmanTrack(d['bbox'],frame,d['conf']))
 
-    def _init_mil(self, frame, bbox):
-        self._mil=cv2.TrackerMIL_create(); self._mil.init(frame,bbox)
+        self.lost_tracks=[t for t in self.lost_tracks if t.missed<=self.LOST_TTL]
+        return [t for t in self.active_tracks if t.hit_streak>=self.MIN_HITS]
 
-    def _emit(self, bbox):
-        arr=np.array(bbox,float)
+    def _associate(self,tracks,dets,frame,iou_thr,reactivate=False):
+        if not tracks or not dets: return list(tracks),list(dets)
+        cost=np.zeros((len(tracks),len(dets)),dtype=float)
+        for ti,t in enumerate(tracks):
+            tb=t.get_bbox(); th=t.ref_hist
+            for di,d in enumerate(dets):
+                iou=bbox_iou(tb,d['bbox']); hs=hist_sim(th,crop_hist(frame,d['bbox']))
+                cost[ti,di]=1.0-(iou*0.60+hs*0.40)
+        mt,md=set(),set()
+        while True:
+            avail=[(ti,di) for ti in range(len(tracks)) for di in range(len(dets))
+                   if ti not in mt and di not in md]
+            if not avail: break
+            ti,di=min(avail,key=lambda p:cost[p[0],p[1]])
+            if cost[ti,di]>=1.0-iou_thr: break
+            mt.add(ti); md.add(di)
+            t=tracks[ti]; d=dets[di]
+            t.update(d['bbox'],frame,d['conf'])
+            if reactivate:
+                t.reactivate(d['bbox'],frame)
+                if t in self.lost_tracks: self.lost_tracks.remove(t)
+                if t not in self.active_tracks: self.active_tracks.append(t)
+            if d.get('kp') is not None: t._yolo_kp=d['kp']
+        return ([tracks[i] for i in range(len(tracks)) if i not in mt],
+                [dets[i]   for i in range(len(dets))   if i not in md])
+
+    def reset(self):
+        for t in self.active_tracks+self.lost_tracks: t.x[4:]=0.
+        print("[TRACKER] Scene cut — velocity reset.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TARGET LOCK  — single-player selector on top of ByteTracker
+#  Handles: occlusion, camera cuts, player overlap / identity swap
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TargetLock:
+    def __init__(self,seed_bbox,seed_hist,seed_frame_idx):
+        self._seed_bbox=seed_bbox; self._ref_hist=seed_hist
+        self._seed_fi=seed_frame_idx; self._target_id=None
+        self._last_bbox=None; self._smooth_box=None; self._alpha=0.35
+        self._state="searching"; self._lost_frames=0; self._fi=0
+        self.bt=ByteTracker(); self.scene=SceneChangeDetector()
+
+    @property
+    def state(self): return self._state
+    @property
+    def lost_count(self): return self._lost_frames
+
+    def update(self,frame)->Optional[Tuple]:
+        # Scene cut
+        if self.scene.is_cut(frame) and self._fi>10:
+            print(f"[LOCK] Scene cut @ frame {self._fi}")
+            self.bt.reset(); self._target_id=None; self._state="searching"
+
+        dets=_detection_layer.detect(frame)
+        tracks=self.bt.update(dets,frame)
+        self._fi+=1
+
+        # Initial lock
+        if self._target_id is None:
+            if self._fi>=self._seed_fi:
+                self._target_id=self._choose(tracks,frame)
+                if self._target_id is not None:
+                    print(f"[LOCK] Locked id={self._target_id} @ frame {self._fi}")
+                    self._state="tracking"
+            return None
+
+        target=next((t for t in tracks if t.id==self._target_id),None)
+        if target is not None:
+            target=self._resolve_overlap(target,tracks)
+
+        if target is None:
+            self._lost_frames+=1; self._state="lost"
+            target=self._reacquire(tracks,strict=self._lost_frames<=5)
+            if target is None:
+                target=self._reacquire(self.bt.lost_tracks,strict=False)
+        else:
+            self._lost_frames=0; self._state="tracking"
+
+        if target is None: return None
+        self._target_id=target.id; self._last_bbox=target.get_bbox()
+        return self._emit(self._last_bbox)
+
+    def _choose(self,tracks,frame)->Optional[int]:
+        if not tracks: return None
+        best,bid=-1.,None
+        for t in tracks:
+            iou=bbox_iou(t.get_bbox(),self._seed_bbox)
+            hs=hist_sim(t.ref_hist,self._ref_hist)
+            sw,sh=self._seed_bbox[2],self._seed_bbox[3]
+            tw,th=t.get_bbox()[2],t.get_bbox()[3]
+            ss=min(sw*sh,tw*th)/(max(sw*sh,tw*th)+1e-6)
+            sc=iou*0.45+hs*0.40+ss*0.15
+            if sc>best: best,bid=sc,t.id
+        return bid
+
+    def _reacquire(self,tracks,strict=True)->Optional[KalmanTrack]:
+        if not tracks: return None
+        thr=0.35 if strict else 0.18; best,bt=-1.,None
+        for t in tracks:
+            hs=hist_sim(t.ref_hist,self._ref_hist)
+            if hs<thr: continue
+            if self._last_bbox is not None:
+                lw,lh=self._last_bbox[2],self._last_bbox[3]
+                tw,th=t.get_bbox()[2],t.get_bbox()[3]
+                ss=min(lw*lh,tw*th)/(max(lw*lh,tw*th)+1e-6)
+                if ss<0.25: continue
+                sc=hs*0.65+ss*0.35
+            else: sc=hs
+            if sc>best: best,bt=sc,t
+        if bt is not None:
+            print(f"[LOCK] Re-acquired id={bt.id} (score={best:.2f}) @ frame {self._fi}")
+            self._target_id=bt.id; self._state="tracking"
+        return bt
+
+    def _resolve_overlap(self,target,tracks)->KalmanTrack:
+        tb=target.get_bbox()
+        for other in tracks:
+            if other.id==target.id: continue
+            if bbox_iou(tb,other.get_bbox())>0.55:
+                ts=hist_sim(target.ref_hist,self._ref_hist)
+                os=hist_sim(other.ref_hist,self._ref_hist)
+                if os>ts+0.12:
+                    print(f"[LOCK] Overlap swap {target.id}->{other.id} @ frame {self._fi}")
+                    self._target_id=other.id; return other
+        return target
+
+    def _emit(self,bbox)->Tuple:
+        arr=np.array(bbox,dtype=float)
         if self._smooth_box is None: self._smooth_box=arr
         else: self._smooth_box=self._alpha*arr+(1-self._alpha)*self._smooth_box
         return tuple(int(v) for v in self._smooth_box)
 
-    @property
-    def state(self): return self._state
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODULE-LEVEL DETECTION SINGLETON
+# ══════════════════════════════════════════════════════════════════════════════
+
+_detection_layer:Optional[DetectionLayer]=None
+
+def _get_detection_layer(model_size="m")->DetectionLayer:
+    global _detection_layer
+    if _detection_layer is None: _detection_layer=DetectionLayer(model_size)
+    return _detection_layer
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  INTERACTIVE PLAYER PICKER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def pick_player_interactive(video_path:str)->Optional[dict]:
+    det=_get_detection_layer()
+    cap=cv2.VideoCapture(video_path)
+    if not cap.isOpened(): raise FileNotFoundError(video_path)
+    total=int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    W=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); H=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    WARMUP=min(90,total//3); cands=[]
+    for fi in range(WARMUP):
+        ret,frame=cap.read()
+        if not ret: break
+        dets=det.detect(frame)
+        if dets: cands.append((frame.copy(),dets,fi))
+    cap.release()
+    if not cands:
+        print("[PICKER] No detections — auto-select.")
+        return select_primary_player(video_path)
+    best_frame,best_dets,best_fi=max(cands,key=lambda c:len(c[1]))
+    display=cv2.addWeighted(best_frame.copy(),0.65,np.zeros_like(best_frame),0.35,0)
+    COLORS=[(0,255,180),(0,140,255),(255,215,0),(0,200,255),(180,0,255),(0,255,80),(255,80,80),(80,255,255)]
+    blobs=[d['bbox'] for d in best_dets]
+    for i,(bx,by,bw,bh) in enumerate(blobs):
+        col=COLORS[i%len(COLORS)]
+        cv2.rectangle(display,(bx,by),(bx+bw,by+bh),col,3,cv2.LINE_AA)
+        lbl=str(i+1); lw,_=cv2.getTextSize(lbl,cv2.FONT_HERSHEY_SIMPLEX,0.8,2)[0]
+        bxb=bx+bw//2-lw//2-6; byb=max(0,by-34)
+        cv2.rectangle(display,(bxb,byb),(bxb+lw+12,byb+28),col,-1)
+        cv2.putText(display,lbl,(bxb+6,byb+22),cv2.FONT_HERSHEY_SIMPLEX,0.8,(0,0,0),2,cv2.LINE_AA)
+    BH=52; banner=np.full((BH,W,3),15,np.uint8)
+    mode_str=det.mode.upper()
+    cv2.putText(banner,f"[{mode_str}] CLICK player to track  |  ESC=auto",(W//2-260,34),
+                cv2.FONT_HERSHEY_SIMPLEX,0.68,(255,215,0),1,cv2.LINE_AA)
+    display=np.vstack([banner,display])
+    chosen=[None]
+    def on_click(ev,cx,cy,fl,p):
+        if ev!=cv2.EVENT_LBUTTONDOWN: return
+        ay=cy-BH
+        if ay<0: return
+        for b in blobs:
+            bx,by,bw,bh=b
+            if bx<=cx<=bx+bw and by<=ay<=by+bh: chosen[0]=b; return
+        chosen[0]=min(blobs,key=lambda b:math.hypot(cx-(b[0]+b[2]/2),ay-(b[1]+b[3]/2)))
+    cv2.namedWindow("Select Player",cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Select Player",min(W,1280),min(H+BH,800))
+    cv2.setMouseCallback("Select Player",on_click)
+    print(f"\n[PICKER] {len(blobs)} player(s) [{mode_str}].  Click to select, ESC=auto.\n")
+    while True:
+        cv2.imshow("Select Player",display)
+        if chosen[0] is not None or (cv2.waitKey(20)&0xFF)==27: break
+    cv2.destroyAllWindows()
+    if chosen[0] is None:
+        print("[PICKER] ESC — auto-select."); return select_primary_player(video_path)
+    blob=chosen[0]; bx,by,bw,bh=blob
+    print(f"[PICKER] Selected bbox={blob}")
+    return {'hist':crop_hist(best_frame,blob),'size':(float(bw),float(bh)),
+            'seed_bbox':blob,'seed_frame':best_fi}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  AUTO PRE-SCAN
+# ══════════════════════════════════════════════════════════════════════════════
+
+def select_primary_player(video_path:str,sample_step:int=6)->Optional[dict]:
+    det=_get_detection_layer()
+    cap=cv2.VideoCapture(video_path)
+    if not cap.isOpened(): return None
+    total=int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    tracks:List[dict]=[]; MAX_GAP=max(sample_step*5,30); fi=0
+    print(f"[PRE-SCAN] {total} frames (step={sample_step}) …")
+    while True:
+        ret,frame=cap.read()
+        if not ret: break
+        if fi%sample_step==0:
+            for d in det.detect(frame):
+                blob=d['bbox']; bx,by,bw,bh=blob; matched=False
+                for tr in tracks:
+                    if fi-tr["lf"]>MAX_GAP: continue
+                    iou=bbox_iou(blob,tr["lb"])
+                    rw,rh=tr["ms"]
+                    ss=min(bw*bh,rw*rh)/(max(bw*bh,rw*rh)+1e-6)
+                    if iou*0.7+ss*0.3>0.15 and (iou>0.10 or ss>0.55):
+                        h=crop_hist(frame,blob); tr["n"]+=1
+                        if h is not None: tr["hs"].append(h)
+                        n=tr["n"]; pw,ph=tr["ms"]
+                        tr["ms"]=((pw*(n-1)+bw)/n,(ph*(n-1)+bh)/n)
+                        tr["lb"]=blob; tr["lf"]=fi; matched=True; break
+                if not matched:
+                    h=crop_hist(frame,blob)
+                    tracks.append({"n":1,"hs":[h] if h is not None else [],"ms":(float(bw),float(bh)),
+                                   "lb":blob,"lf":fi,"sb":blob,"sf":fi})
+        fi+=1
+    cap.release()
+    if not tracks: return None
+    best=max(tracks,key=lambda t:t["n"])
+    print(f"[PRE-SCAN] Best: {best['n']} hits, seed={best['sb']}")
+    mh=None
+    if best["hs"]:
+        stacked=np.mean(best["hs"],axis=0).astype(np.float32); cv2.normalize(stacked,stacked); mh=stacked
+    return {'hist':mh,'size':best["ms"],'seed_bbox':best["sb"],'seed_frame':best["sf"]}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  HYBRID POSE ESTIMATOR  — YOLO keypoints + geometric fallback
+# ══════════════════════════════════════════════════════════════════════════════
+
+_COCO={"nose":0,"left_shoulder":5,"right_shoulder":6,"left_elbow":7,"right_elbow":8,
+       "left_wrist":9,"right_wrist":10,"left_hip":11,"right_hip":12,
+       "left_knee":13,"right_knee":14,"left_ankle":15,"right_ankle":16}
+
+class HybridPoseEstimator:
+    _VP=dict(head=0.04,neck=0.11,shoulder=0.20,elbow=0.34,wrist=0.46,
+             hip=0.54,knee=0.73,ankle=0.91,foot=0.99)
+
+    def __init__(self): self._prev_cx=None; self._dh=deque(maxlen=8)
+
+    def estimate(self,frame,bbox,ts,spd=0.,yolo_kp=None)->PoseKeypoints:
+        x,y,w,h=bbox; cx=x+w/2.
+        disp=abs(cx-self._prev_cx) if self._prev_cx is not None else 0.
+        self._prev_cx=cx; self._dh.append(disp)
+        ds=sum(self._dh); phase=(ds/max(w*0.18,4.))*math.pi
+        swing=clamp01(spd/9.); arm_sw=swing*0.10*w; leg_sw=swing*0.08*w; k_lift=swing*0.08*h
+        cw=self._cwidths(frame,bbox); sh,hh=self._bwidths(cw,w,h)
+        def vy(f): return y+f*h
+        kp=PoseKeypoints()
+        kp.head=(cx,vy(self._VP["head"])); kp.neck=(cx,vy(self._VP["neck"]))
+        ls=(cx-sh,vy(self._VP["shoulder"])); rs=(cx+sh,vy(self._VP["shoulder"]))
+        kp.left_shoulder=ls; kp.right_shoulder=rs
+        kp.shoulder_center=((ls[0]+rs[0])/2.,(ls[1]+rs[1])/2.)
+        aoff=arm_sw*math.sin(phase)
+        le=(ls[0]-aoff,vy(self._VP["elbow"])); re=(rs[0]+aoff,vy(self._VP["elbow"]))
+        kp.left_elbow=le; kp.right_elbow=re
+        kp.left_wrist=(le[0]-aoff*.55,vy(self._VP["wrist"]))
+        kp.right_wrist=(re[0]+aoff*.55,vy(self._VP["wrist"]))
+        lh=(cx-hh,vy(self._VP["hip"])); rh=(cx+hh,vy(self._VP["hip"]))
+        kp.left_hip=lh; kp.right_hip=rh
+        kp.hip_center=((lh[0]+rh[0])/2.,(lh[1]+rh[1])/2.)
+        loff=leg_sw*math.sin(phase); roff=-loff
+        ll=k_lift*max(0.,math.sin(phase)); rl=k_lift*max(0.,-math.sin(phase))
+        kp.left_knee=(lh[0]+loff,vy(self._VP["knee"])-ll)
+        kp.right_knee=(rh[0]+roff,vy(self._VP["knee"])-rl)
+        kp.left_ankle=(lh[0]+loff*.45,vy(self._VP["ankle"])-ll*.5)
+        kp.right_ankle=(rh[0]+roff*.45,vy(self._VP["ankle"])-rl*.5)
+        kp.left_foot=(kp.left_ankle[0]+w*.07,vy(self._VP["foot"]))
+        kp.right_foot=(kp.right_ankle[0]+w*.07,vy(self._VP["foot"]))
+        # Overlay YOLO where available
+        if yolo_kp is not None and len(yolo_kp)==17:
+            def g(nm):
+                i=_COCO.get(nm)
+                if i is None: return None
+                pt=yolo_kp[i]
+                return (float(pt[0]),float(pt[1])) if (pt[0]>1 or pt[1]>1) else None
+            def gxy(nm,df): p=g(nm); return p if p is not None else df
+            kp.left_shoulder=gxy("left_shoulder",kp.left_shoulder)
+            kp.right_shoulder=gxy("right_shoulder",kp.right_shoulder)
+            kp.left_elbow=gxy("left_elbow",kp.left_elbow)
+            kp.right_elbow=gxy("right_elbow",kp.right_elbow)
+            kp.left_wrist=gxy("left_wrist",kp.left_wrist)
+            kp.right_wrist=gxy("right_wrist",kp.right_wrist)
+            kp.left_hip=gxy("left_hip",kp.left_hip)
+            kp.right_hip=gxy("right_hip",kp.right_hip)
+            kp.left_knee=gxy("left_knee",kp.left_knee)
+            kp.right_knee=gxy("right_knee",kp.right_knee)
+            kp.left_ankle=gxy("left_ankle",kp.left_ankle)
+            kp.right_ankle=gxy("right_ankle",kp.right_ankle)
+            nose=g("nose")
+            if nose: kp.head=nose
+            kp.shoulder_center=((kp.left_shoulder[0]+kp.right_shoulder[0])/2.,
+                                  (kp.left_shoulder[1]+kp.right_shoulder[1])/2.)
+            kp.hip_center=((kp.left_hip[0]+kp.right_hip[0])/2.,
+                            (kp.left_hip[1]+kp.right_hip[1])/2.)
+            kp.neck=((kp.shoulder_center[0]+kp.head[0])/2.,
+                      (kp.shoulder_center[1]+kp.head[1])/2.)
+            for side in ("left","right"):
+                ank=getattr(kp,f"{side}_ankle")
+                object.__setattr__(kp,f"{side}_foot",(ank[0]+w*.04,ank[1]+h*.03))
+        return kp
+
+    def _cwidths(self,frame,bbox):
+        bx,by,bw,bh=bbox; H,W=frame.shape[:2]
+        bx2=min(bx+bw,W); by2=min(by+bh,H); bx=max(0,bx); by=max(0,by)
+        if bx2-bx<5 or by2-by<5: return None
+        crop=frame[by:by2,bx:bx2]
+        _,mask=cv2.threshold(cv2.cvtColor(crop,cv2.COLOR_BGR2GRAY),0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+        ws=np.array([np.sum(mask[r]>0) for r in range(mask.shape[0])],dtype=float)
+        return smooth_arr(ws,w=max(3,bh//20)) if len(ws)>5 else None
+
+    def _bwidths(self,cw,bw,bh):
+        dsh=bw*.29; dh=bw*.17
+        if cw is None or len(cw)<10: return dsh,dh
+        n=len(cw); u=cw[int(n*.15):int(n*.40)]; l=cw[int(n*.48):int(n*.68)]
+        sh=float(np.max(u))/2. if len(u) else dsh
+        hh=float(np.max(l))/2. if len(l) else dh
+        return float(np.clip(sh,bw*.18,bw*.42)),float(np.clip(hh,bw*.10,bw*.32))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  KALMAN JOINT SMOOTHER
+# ══════════════════════════════════════════════════════════════════════════════
+
+class JointKalman:
+    def __init__(self,pn=1.5,on=8.0):
+        self.x=None; self.v=0.; self.P=np.array([[100.,0.],[0.,100.]])
+        self.Q=np.diag([pn,pn*2]); self.R=on
+        self.F=np.array([[1.,1.],[0.,1.]]); self.H=np.array([[1.,0.]])
+    def update(self,z):
+        if self.x is None: self.x=z; return z
+        st=self.F@np.array([self.x,self.v]); Pp=self.F@self.P@self.F.T+self.Q
+        y=z-(self.H@st)[0]; S=(self.H@Pp@self.H.T)[0,0]+self.R
+        K=Pp@self.H.T/S; st=st+(K*y).flatten()
+        self.P=(np.eye(2)-np.outer(K.flatten(),self.H))@Pp
+        self.x,self.v=float(st[0]),float(st[1]); return self.x
+
+class PoseKalmanSmoother:
+    def __init__(self): self._kx={}; self._ky={}
+    def smooth(self,kp):
+        out=PoseKeypoints()
+        for nm in JOINT_NAMES:
+            raw=getattr(kp,nm)
+            if nm not in self._kx: self._kx[nm]=JointKalman(); self._ky[nm]=JointKalman()
+            object.__setattr__(out,nm,(self._kx[nm].update(raw[0]),self._ky[nm].update(raw[1])))
+        return out
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SKELETON RENDERER
-#  — Gradient bone segments (colour transitions along each limb)
-#  — Glow effect on joints (soft outer circle before hard inner fill)
-#  — Per-limb colouring: left=cyan, right=orange, spine=white, at-risk=red
-#  — Joints scale with confidence (bigger = more certain)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Connections: (joint_a, joint_b, color_a_BGR, color_b_BGR, thickness)
-_C = (255,220,0)   # Juventus gold
-_W = (240,240,240) # white
-_L = (255,200,0)   # left  cyan-ish
-_R = (0,140,255)   # right orange
-_S = (180,240,180) # spine light green
-
-BONE_DEFS = [
-    # Spine
-    ("head",          "neck",           _W,  _W,  4),
-    ("neck",          "shoulder_center",_W,  _S,  4),
-    ("shoulder_center","hip_center",    _S,  _S,  5),
-    # Left arm
-    ("left_shoulder", "left_elbow",     _L,  _L,  5),
-    ("left_elbow",    "left_wrist",     _L,  _L,  4),
-    # Right arm
-    ("right_shoulder","right_elbow",    _R,  _R,  5),
-    ("right_elbow",   "right_wrist",    _R,  _R,  4),
-    # Shoulder girdle
-    ("left_shoulder", "right_shoulder", _L,  _R,  4),
-    # Hip girdle
-    ("left_hip",      "right_hip",      _L,  _R,  5),
-    # Left leg
-    ("left_hip",      "left_knee",      _L,  _L,  7),
-    ("left_knee",     "left_ankle",     _L,  _L,  6),
-    ("left_ankle",    "left_foot",      _L,  _L,  4),
-    # Right leg
-    ("right_hip",     "right_knee",     _R,  _R,  7),
-    ("right_knee",    "right_ankle",    _R,  _R,  6),
-    ("right_ankle",   "right_foot",     _R,  _R,  4),
+_W=(240,240,240); _L=(255,200,0); _R=(0,140,255); _S=(180,240,180)
+BONE_DEFS=[
+    ("head","neck",_W,_W,4),("neck","shoulder_center",_W,_S,4),
+    ("shoulder_center","hip_center",_S,_S,5),
+    ("left_shoulder","left_elbow",_L,_L,5),("left_elbow","left_wrist",_L,_L,4),
+    ("right_shoulder","right_elbow",_R,_R,5),("right_elbow","right_wrist",_R,_R,4),
+    ("left_shoulder","right_shoulder",_L,_R,4),("left_hip","right_hip",_L,_R,5),
+    ("left_hip","left_knee",_L,_L,7),("left_knee","left_ankle",_L,_L,6),("left_ankle","left_foot",_L,_L,4),
+    ("right_hip","right_knee",_R,_R,7),("right_knee","right_ankle",_R,_R,6),("right_ankle","right_foot",_R,_R,4),
 ]
 
+def draw_gradient_bone(img,p1,p2,c1,c2,th,rt=0.):
+    s=max(8,int(dist2d(p1,p2)/4))
+    for i in range(s):
+        t=i/max(s-1,1); t2=(i+1)/max(s-1,1)
+        col=lerp_color(lerp_color(c1,c2,t),(0,0,220),rt*.6)
+        cv2.line(img,(int(p1[0]+t*(p2[0]-p1[0])),int(p1[1]+t*(p2[1]-p1[1]))),
+                 (int(p1[0]+t2*(p2[0]-p1[0])),int(p1[1]+t2*(p2[1]-p1[1]))),col,th,cv2.LINE_AA)
 
-def draw_gradient_bone(img, p1, p2, c1, c2, thickness, risk_tint=0.):
-    """Draw a bone segment with colour gradient and optional red risk tint."""
-    steps = max(8, int(dist2d(p1,p2)/4))
-    for i in range(steps):
-        t  = i / max(steps-1, 1)
-        t2 = (i+1) / max(steps-1, 1)
-        # Interpolate colour along the bone
-        col = lerp_color(c1, c2, t)
-        # Blend toward red based on risk
-        col = lerp_color(col, (0,0,220), risk_tint*0.6)
-        px1 = (int(p1[0]+t*(p2[0]-p1[0])),   int(p1[1]+t*(p2[1]-p1[1])))
-        px2 = (int(p1[0]+t2*(p2[0]-p1[0])),  int(p1[1]+t2*(p2[1]-p1[1])))
-        cv2.line(img, px1, px2, col, thickness, cv2.LINE_AA)
+def draw_glow_joint(img,pt,r,col,ga=0.45):
+    px,py=int(pt[0]),int(pt[1])
+    for rr in range(r+6,r,-2):
+        ov=img.copy(); cv2.circle(ov,(px,py),rr,col,-1,cv2.LINE_AA)
+        cv2.addWeighted(ov,ga*(1-(rr-r)/6.),img,1-ga*(1-(rr-r)/6.),0,img)
+    cv2.circle(img,(px,py),r,(255,255,255),-1,cv2.LINE_AA)
+    cv2.circle(img,(px,py),max(1,r-2),col,-1,cv2.LINE_AA)
 
+def render_skeleton(frame,kp,risk_tint=0.):
+    kpd={n:getattr(kp,n) for n in JOINT_NAMES}
+    for a,b,c1,c2,th in BONE_DEFS:
+        if a in kpd and b in kpd: draw_gradient_bone(frame,kpd[a],kpd[b],c1,c2,th,risk_tint)
+    sz={"head":4,"neck":3,"left_shoulder":4,"right_shoulder":4,"left_elbow":3,"right_elbow":3,
+        "left_wrist":3,"right_wrist":3,"left_hip":5,"right_hip":5,"left_knee":6,"right_knee":6,
+        "left_ankle":5,"right_ankle":5,"left_foot":3,"right_foot":3}
+    for nm,r in sz.items():
+        if nm in kpd:
+            col=lerp_color(_L if "left" in nm else _R if "right" in nm else _W,(0,0,220),risk_tint*.5)
+            draw_glow_joint(frame,kpd[nm],r,col)
 
-def draw_glow_joint(img, pt, radius, color, glow_alpha=0.45):
-    """Draw a joint with a soft glow halo then a filled centre."""
-    px, py = int(pt[0]), int(pt[1])
-    # Glow — draw several concentric translucent circles
-    for r in range(radius+6, radius, -2):
-        ov = img.copy()
-        cv2.circle(ov, (px,py), r, color, -1, cv2.LINE_AA)
-        alpha = glow_alpha * (1 - (r-radius)/6.)
-        cv2.addWeighted(ov, alpha, img, 1-alpha, 0, img)
-    # Hard fill
-    cv2.circle(img, (px,py), radius, (255,255,255), -1, cv2.LINE_AA)
-    cv2.circle(img, (px,py), max(1,radius-2), color, -1, cv2.LINE_AA)
-
-
-def render_skeleton(frame, kp: PoseKeypoints, risk_tint: float = 0.):
-    """Full skeleton render with gradient bones + glowing joints."""
-    kpd = {n: getattr(kp,n) for n in JOINT_NAMES}
-
-    # 1. Draw bones
-    for a, b, c1, c2, th in BONE_DEFS:
-        if a in kpd and b in kpd:
-            draw_gradient_bone(frame, kpd[a], kpd[b], c1, c2, th, risk_tint)
-
-    # 2. Draw joints — larger for load-bearing ones
-    joint_sizes = {
-        "head":4, "neck":3,
-        "left_shoulder":4,"right_shoulder":4,
-        "left_elbow":3,"right_elbow":3,
-        "left_wrist":3,"right_wrist":3,
-        "left_hip":5,"right_hip":5,
-        "left_knee":6,"right_knee":6,
-        "left_ankle":5,"right_ankle":5,
-        "left_foot":3,"right_foot":3,
-    }
-    for name, r in joint_sizes.items():
-        if name in kpd:
-            col = lerp_color(_L if "left" in name else _R if "right" in name else _W,
-                             (0,0,220), risk_tint*0.5)
-            draw_glow_joint(frame, kpd[name], r, col)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  RISK GAUGE  (animated arc drawn directly onto the frame)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def draw_risk_gauge(frame, cx, cy, radius, score_0_100, label="RISK"):
-    """Animated arc gauge showing risk 0–100."""
-    bg_col  = (30,30,30)
-    # Background arc
-    cv2.ellipse(frame,(cx,cy),(radius,radius),225,0,270,bg_col,6,cv2.LINE_AA)
-    # Filled arc
-    sweep = int(270 * clamp01(score_0_100/100.))
-    if sweep > 0:
-        col = risk_color(score_0_100)
-        cv2.ellipse(frame,(cx,cy),(radius,radius),225,0,sweep,col,6,cv2.LINE_AA)
-    # Score text
-    col = risk_color(score_0_100)
-    cv2.putText(frame, f"{score_0_100:.0f}", (cx-18,cy+7),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.75, col, 2, cv2.LINE_AA)
-    cv2.putText(frame, label, (cx-20,cy+radius-2),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180,180,180), 1, cv2.LINE_AA)
+def draw_risk_gauge(frame,cx,cy,radius,s,label="RISK"):
+    cv2.ellipse(frame,(cx,cy),(radius,radius),225,0,270,(30,30,30),6,cv2.LINE_AA)
+    sw=int(270*clamp01(s/100.))
+    if sw>0: cv2.ellipse(frame,(cx,cy),(radius,radius),225,0,sw,risk_color(s),6,cv2.LINE_AA)
+    col=risk_color(s)
+    cv2.putText(frame,f"{s:.0f}",(cx-18,cy+7),cv2.FONT_HERSHEY_SIMPLEX,.75,col,2,cv2.LINE_AA)
+    cv2.putText(frame,label,(cx-20,cy+radius-2),cv2.FONT_HERSHEY_SIMPLEX,.38,(180,180,180),1,cv2.LINE_AA)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -854,669 +722,255 @@ def draw_risk_gauge(frame, cx, cy, radius, score_0_100, label="RISK"):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SportsAnalyzer:
+    PIX_TO_M=None
 
-    PIX_TO_M = None
-
-    SKELETON_CONNECTIONS = [  # kept for legacy reference; rendering uses BONE_DEFS
-        ("head","neck"),("neck","left_shoulder"),("neck","right_shoulder"),
-        ("left_shoulder","left_elbow"),("left_elbow","left_wrist"),
-        ("right_shoulder","right_elbow"),("right_elbow","right_wrist"),
-        ("left_shoulder","left_hip"),("right_shoulder","right_hip"),
-        ("left_hip","right_hip"),
-        ("left_hip","left_knee"),("left_knee","left_ankle"),("left_ankle","left_foot"),
-        ("right_hip","right_knee"),("right_knee","right_ankle"),("right_ankle","right_foot"),
-    ]
-
-    def __init__(self, video_path, output_video_path="output_annotated.mp4",
-                 player_id=1, fps_override=None, pick=False):
-        """
-        pick=False  →  auto-select the most persistent player (default)
-        pick=True   →  open an interactive window so you click the player
-        """
-        self.video_path        = video_path
-        self.output_video_path = output_video_path
-        self.player_id         = player_id
-        self.fps_override      = fps_override
-        self.pose_est          = ContourPoseEstimator()
-        self.smoother          = PoseKalmanSmoother()
-        self.pose_frames:   List[PoseFrame]    = []
-        self.frame_metrics: List[FrameMetrics] = []
-        self.summary = PlayerSummary(player_id=player_id)
-        self._spd_win   = deque(maxlen=30)
-        self._risk_win  = deque(maxlen=15)
-
+    def __init__(self,video_path,output_video_path="output_annotated.mp4",
+                 player_id=1,fps_override=None,pick=False,yolo_size="m"):
+        self.video_path=video_path; self.output_video_path=output_video_path
+        self.player_id=player_id; self.fps_override=fps_override
+        self.pose_est=HybridPoseEstimator(); self.smoother=PoseKalmanSmoother()
+        self.pose_frames:List[PoseFrame]=[]; self.frame_metrics:List[FrameMetrics]=[]
+        self.summary=PlayerSummary(player_id=player_id)
+        self._spd_win=deque(maxlen=30); self._risk_win=deque(maxlen=15)
+        self._trail=deque(maxlen=60); self._speed_history=deque(maxlen=90)
+        self._accel_burst=0; self._fps_cache=30.
+        _get_detection_layer(yolo_size)
         if pick:
-            print("[INFO] Interactive player selection…")
-            primary = pick_player_interactive(video_path)
+            print("[INFO] Interactive selection …"); primary=pick_player_interactive(video_path)
         else:
-            print("[INFO] Running pre-scan to identify primary player…")
-            primary = select_primary_player(video_path)
-
-        if primary is None:
-            raise RuntimeError("Could not identify any player candidates.")
-        self.tracker = PlayerTracker(primary)
-
-        # ── Wow-factor state ──────────────────────────────────────────────────
-        self._trail: deque = deque(maxlen=60)        # hip positions for motion trail
-        self._speed_history: deque = deque(maxlen=90) # speed for sparkline
-        self._accel_burst: int = 0                   # frames to show accel burst
-        self._fps_cache: float = 30.                 # cached from process_video
-
-    # ── PROCESS VIDEO ─────────────────────────────────────────────────────────
+            print("[INFO] Pre-scan …"); primary=select_primary_player(video_path)
+        if primary is None: raise RuntimeError("No player candidates found.")
+        self.lock=TargetLock(primary["seed_bbox"],primary["hist"],primary["seed_frame"])
 
     def process_video(self):
-        cap = cv2.VideoCapture(self.video_path)
+        cap=cv2.VideoCapture(self.video_path)
         if not cap.isOpened(): raise FileNotFoundError(self.video_path)
-
-        fps   = self.fps_override or cap.get(cv2.CAP_PROP_FPS) or 30.
-        self._fps_cache = fps
-        W     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        H     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out    = cv2.VideoWriter(self.output_video_path, fourcc, fps, (W,H))
-        print(f"[INFO] {total} frames @ {fps:.1f} fps  ({W}x{H})")
-
-        idx = 0
+        fps=self.fps_override or cap.get(cv2.CAP_PROP_FPS) or 30.
+        self._fps_cache=fps
+        W=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); H=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total=int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        out=cv2.VideoWriter(self.output_video_path,cv2.VideoWriter_fourcc(*"mp4v"),fps,(W,H))
+        print(f"[INFO] {total} frames @ {fps:.1f} fps  ({W}×{H})")
+        idx=0
         while True:
-            ret, frame = cap.read()
+            ret,frame=cap.read()
             if not ret: break
-            ts   = idx / fps
-            bbox = self.tracker.update(frame)
-
-            visible = False
-            if bbox and bbox[2] > 20 and bbox[3] > 40:
-                visible = True
-                spd = self.frame_metrics[-1].speed if self.frame_metrics else 0.
-                # Raw pose from contour estimator
-                raw_kp = self.pose_est.estimate(frame, bbox, ts, spd)
-                # Smooth every joint with Kalman filter
-                kp     = self.smoother.smooth(raw_kp)
-
-                pf = PoseFrame(idx, ts, bbox, kp)
-                self.pose_frames.append(pf)
+            ts=idx/fps; bbox=self.lock.update(frame)
+            visible=False
+            if bbox and bbox[2]>20 and bbox[3]>40:
+                visible=True; target=next((t for t in self.lock.bt.active_tracks if t.id==self.lock._target_id),None)
+                yolo_kp=getattr(target,'_yolo_kp',None) if target else None; spd=self.frame_metrics[-1].speed if self.frame_metrics else 0.
+                raw_kp=self.pose_est.estimate(frame,bbox,ts,spd,yolo_kp=yolo_kp); kp=self.smoother.smooth(raw_kp); pf=PoseFrame(idx,ts,bbox,kp); self.pose_frames.append(pf)
                 if self.PIX_TO_M is None: self._calibrate(kp)
+                fm=self._metrics(pf,idx,ts,fps); self.frame_metrics.append(fm); self._trail.append((int(kp.hip_center[0]),int(kp.hip_center[1]))); self._speed_history.append(fm.speed)
+                if abs(fm.acceleration)>4.0: self._accel_burst=8
+                elif self._accel_burst>0: self._accel_burst-=1
+                frame=self._draw_trail(frame); frame=self._annotate(frame,pf,fm,W,H); frame=self._draw_player_aura(frame,kp,fm)
+            frame=self._hud(frame,idx,ts,total,visible); out.write(frame); idx+=1
+        cap.release(); out.release(); tr=len(self.pose_frames); print(f"[INFO] Tracked {tr}/{idx} frames ({100*tr/max(idx,1):.1f}%)")
+        self._post_gait(fps); self._build_summary(); print("[INFO] Done."); return self.summary
 
-                fm = self._metrics(pf, idx, ts, fps)
-                self.frame_metrics.append(fm)
-                # Feed wow-factor state
-                self._trail.append((int(kp.hip_center[0]), int(kp.hip_center[1])))
-                self._speed_history.append(fm.speed)
-                if abs(fm.acceleration) > 4.0:
-                    self._accel_burst = 8   # hold burst effect for 8 frames
-                elif self._accel_burst > 0:
-                    self._accel_burst -= 1
+    def _calibrate(self,kp):
+        leg=(dist2d(kp.left_hip,kp.left_ankle)+dist2d(kp.right_hip,kp.right_ankle))/2; self.PIX_TO_M=0.9/leg if leg>10 else 0.002
 
-                frame = self._draw_trail(frame)
-                frame = self._annotate(frame, pf, fm, W, H)
-                frame = self._draw_player_aura(frame, kp, fm)
-
-            frame = self._hud(frame, idx, ts, total, visible)
-            out.write(frame)
-            idx += 1
-
-        cap.release(); out.release()
-        print(f"[INFO] Tracked in {len(self.pose_frames)}/{idx} frames")
-        self._post_gait(fps)
-        self._build_summary()
-        print("[INFO] Done.")
-        return self.summary
-
-    # ── CALIBRATION ───────────────────────────────────────────────────────────
-
-    def _calibrate(self, kp):
-        leg = (dist2d(kp.left_hip, kp.left_ankle) +
-               dist2d(kp.right_hip,kp.right_ankle)) / 2
-        self.PIX_TO_M = 0.9/leg if leg>10 else 0.002
-
-    # ── PER-FRAME METRICS ─────────────────────────────────────────────────────
-
-    def _metrics(self, pf, idx, ts, fps) -> FrameMetrics:
-        fm = FrameMetrics(frame_idx=idx, timestamp=ts)
-        kp = pf.kp; sc = self.PIX_TO_M or 0.002
-
-        fm.left_knee_angle  = angle_3pts(kp.left_hip,      kp.left_knee,  kp.left_ankle)
-        fm.right_knee_angle = angle_3pts(kp.right_hip,     kp.right_knee, kp.right_ankle)
-        fm.left_hip_angle   = angle_3pts(kp.left_shoulder, kp.left_hip,   kp.left_knee)
-        fm.right_hip_angle  = angle_3pts(kp.right_shoulder,kp.right_hip,  kp.right_knee)
-
-        dx = kp.shoulder_center[0]-kp.hip_center[0]
-        dy = kp.shoulder_center[1]-kp.hip_center[1]
-        fm.trunk_lean = math.degrees(math.atan2(abs(dx), abs(dy)+1e-9))
-
-        # Knee valgus proxy (lateral knee deviation / hip width)
-        hw = dist2d(kp.left_hip, kp.right_hip) + 1e-6
-        fm.l_valgus = abs(kp.left_knee[0]  - kp.left_hip[0])  / hw
-        fm.r_valgus = abs(kp.right_knee[0] - kp.right_hip[0]) / hw
-
-        # Speed / acceleration
-        if len(self.pose_frames) >= 2:
-            prev = self.pose_frames[-2]
-            dt   = ts - prev.timestamp + 1e-9
-            dp   = dist2d(kp.hip_center, prev.kp.hip_center) * sc
-            raw  = dp / dt
-            self._spd_win.append(raw)
-            fm.speed = float(np.mean(self._spd_win))
-            fm.body_center_disp = dp
-            if len(self.pose_frames) >= 3:
-                p2  = self.pose_frames[-3]
-                dp2 = dist2d(prev.kp.hip_center,p2.kp.hip_center)*sc
-                dt2 = prev.timestamp-p2.timestamp+1e-9
-                fm.acceleration = (raw - dp2/dt2)/dt
-
-        # Direction change
-        if len(self.pose_frames) >= 5:
-            pos  = [p.kp.hip_center for p in list(self.pose_frames)[-5:]]
-            vecs = [(pos[i+1][0]-pos[i][0],pos[i+1][1]-pos[i][1]) for i in range(4)]
+    def _metrics(self,pf,idx,ts,fps)->FrameMetrics:
+        fm=FrameMetrics(frame_idx=idx,timestamp=ts); kp=pf.kp; sc=self.PIX_TO_M or 0.002
+        fm.left_knee_angle=angle_3pts(kp.left_hip,kp.left_knee,kp.left_ankle); fm.right_knee_angle=angle_3pts(kp.right_hip,kp.right_knee,kp.right_ankle)
+        fm.left_hip_angle=angle_3pts(kp.left_shoulder,kp.left_hip,kp.left_knee); fm.right_hip_angle=angle_3pts(kp.right_shoulder,kp.right_hip,kp.right_knee)
+        dx=kp.shoulder_center[0]-kp.hip_center[0]; dy=kp.shoulder_center[1]-kp.hip_center[1]; fm.trunk_lean=math.degrees(math.atan2(abs(dx),abs(dy)+1e-9))
+        hw=dist2d(kp.left_hip,kp.right_hip)+1e-6; fm.l_valgus=abs(kp.left_knee[0]-kp.left_hip[0])/hw; fm.r_valgus=abs(kp.right_knee[0]-kp.right_hip[0])/hw
+        if len(self.pose_frames)>=2:
+            prev=self.pose_frames[-2]; dt=ts-prev.timestamp+1e-9; dp=dist2d(kp.hip_center,prev.kp.hip_center)*sc; raw=dp/dt
+            self._spd_win.append(raw); fm.speed=float(np.mean(self._spd_win)); fm.body_center_disp=dp
+            if len(self.pose_frames)>=3:
+                p2=self.pose_frames[-3]; dp2=dist2d(prev.kp.hip_center,p2.kp.hip_center)*sc
+                dt2=prev.timestamp-p2.timestamp+1e-9; fm.acceleration=(raw-dp2/dt2)/dt
+        if len(self.pose_frames)>=5:
+            pos=[p.kp.hip_center for p in list(self.pose_frames)[-5:]]; vecs=[(pos[i+1][0]-pos[i][0],pos[i+1][1]-pos[i][1]) for i in range(4)]
             for i in range(len(vecs)-1):
-                v1,v2=np.array(vecs[i]),np.array(vecs[i+1])
-                n1,n2=np.linalg.norm(v1),np.linalg.norm(v2)
-                if n1>2 and n2>2 and math.acos(np.clip(np.dot(v1,v2)/(n1*n2),-1,1))>math.radians(28):
-                    fm.direction_change=True
+                v1,v2=np.array(vecs[i]),np.array(vecs[i+1]); n1,n2=np.linalg.norm(v1),np.linalg.norm(v2)
+                if n1>2 and n2>2 and math.acos(np.clip(np.dot(v1,v2)/(n1*n2),-1,1))>math.radians(28): fm.direction_change=True
+        fm.energy_expenditure=max(1.5,3.5+fm.speed*2.3)*75; ks=sum((155-a)/155 for a in [fm.left_knee_angle,fm.right_knee_angle] if a<155); fm.joint_stress=min(1.,ks/2)
+        if len(self._spd_win)>=10:
+            s=list(self._spd_win); fm.fatigue_index=max(0.,min(1.,(np.mean(s[:5])-np.mean(s[-5:]))/(np.mean(s[:5])+1e-6)))
+        pv=clamp01(((fm.l_valgus+fm.r_valgus)/2-.02)/.08); pk=clamp01(abs(fm.left_knee_angle-fm.right_knee_angle)/30.); pa=clamp01(abs(fm.acceleration)/12); pt=clamp01(fm.trunk_lean/30)
+        ls = clamp01(fm.trunk_lean / 25.) * (max(0, fm.speed - 1.0) / 5.0); asym = clamp01(abs(fm.left_knee_angle-fm.right_knee_angle)/40.)
+        fm.joint_stress = clamp01(fm.joint_stress * 0.5 + ls * 0.3 + asym * 0.2); rr=.30*pv+.25*fm.joint_stress+.20*pk+.15*pa+.10*pt
+        self._risk_win.append(rr); fm.risk_score=float(np.mean(self._risk_win))*100.; fm.fall_risk=0.; fm.injury_risk=rr; return fm
 
-        # Energy
-        met = max(1.5, 3.5+fm.speed*2.3)
-        fm.energy_expenditure = met*75
 
-        # Joint stress (knee flexion)
-        ks = sum((155-a)/155 for a in [fm.left_knee_angle,fm.right_knee_angle] if a<155)
-        fm.joint_stress = min(1., ks/2)
-
-        # Fatigue
-        if len(self._spd_win) >= 10:
-            s=list(self._spd_win)
-            fm.fatigue_index=max(0.,min(1.,(np.mean(s[:5])-np.mean(s[-5:]))/(np.mean(s[:5])+1e-6)))
-
-        # Composite risk score (0–100), same weighting as classmate but extended
-        p_valgus = clamp01(((fm.l_valgus+fm.r_valgus)/2-0.02)/0.08)
-        p_kasym  = clamp01(abs(fm.left_knee_angle-fm.right_knee_angle)/30.)
-        p_accel  = clamp01(abs(fm.acceleration)/12)
-        p_trunk  = clamp01(fm.trunk_lean/30)
-        p_stress = fm.joint_stress
-        raw_risk = (0.30*p_valgus + 0.25*p_stress +
-                    0.20*p_kasym  + 0.15*p_accel  + 0.10*p_trunk)
-        self._risk_win.append(raw_risk)
-        fm.risk_score = float(np.mean(self._risk_win)) * 100.
-
-        # Legacy scalar risks
-        fm.fall_risk   = 0.  # filled in post_gait
-        fm.injury_risk = raw_risk
-
-        return fm
-
-    # ── GAIT ANALYSIS ─────────────────────────────────────────────────────────
-
-    def _post_gait(self, fps):
-        if len(self.pose_frames) < 15: return
-        sc   = self.PIX_TO_M or 0.002
-        la_y = smooth_arr([p.kp.left_ankle[1]  for p in self.pose_frames])
-        ra_y = smooth_arr([p.kp.right_ankle[1] for p in self.pose_frames])
-        md   = max(5, int(fps*0.18))
-        lp,_ = find_peaks(la_y, distance=md, prominence=2)
-        rp,_ = find_peaks(ra_y, distance=md, prominence=2)
-
-        pos   = [p.kp.hip_center for p in self.pose_frames]
-        strl,stt,flt = [],[],[]
+    def _post_gait(self,fps):
+        if len(self.pose_frames)<15: return
+        sc=self.PIX_TO_M or 0.002; la=smooth_arr([p.kp.left_ankle[1] for p in self.pose_frames]); ra=smooth_arr([p.kp.right_ankle[1] for p in self.pose_frames]); md=max(5,int(fps*.18))
+        if HAS_SCIPY: lp,_=find_peaks(la,distance=md,prominence=2); rp,_=find_peaks(ra,distance=md,prominence=2)
+        else:
+            def pk(arr,d):
+                pks=[]
+                for i in range(1,len(arr)-1):
+                    if arr[i]>arr[i-1] and arr[i]>arr[i+1]:
+                        if not pks or i-pks[-1]>=d: pks.append(i)
+                return np.array(pks)
+            lp=pk(la,md); rp=pk(ra,md)
+        pos=[p.kp.hip_center for p in self.pose_frames]; strl,stt,flt=[],[],[]
         for peaks in [lp,rp]:
             for i in range(1,len(peaks)):
                 i0,i1=peaks[i-1],peaks[i]
                 if i1>=len(pos): continue
                 sl=dist2d(pos[i0],pos[i1])*sc
-                if 0.15<sl<3.5: strl.append(sl)
+                if .15<sl<3.5: strl.append(sl)
                 st=(i1-i0)/fps
-                if 0.08<st<2.0: stt.append(st); flt.append(max(0.,st*0.35))
-
+                if .08<st<2.0: stt.append(st); flt.append(max(0.,st*.35))
         n=min(len(lp),len(rp))-1
         if n>0:
-            li=[(lp[i+1]-lp[i])/fps for i in range(n)]
-            ri=[(rp[i+1]-rp[i])/fps for i in range(n)]
-            m=min(len(li),len(ri))
+            li=[(lp[i+1]-lp[i])/fps for i in range(n)]; ri=[(rp[i+1]-rp[i])/fps for i in range(n)]; m=min(len(li),len(ri))
             sym=float(np.mean([1-abs(l-r)/(l+r+1e-9) for l,r in zip(li[:m],ri[:m])]))*100
         else: sym=94.
-
-        sv  = float(np.std(strl)/(np.mean(strl)+1e-9)*100) if len(strl)>2 else 3.5
-        asl = float(np.mean(strl)) if strl else 1.35
-        ast = float(np.mean(stt))  if stt  else 0.38
-        aft = float(np.mean(flt))  if flt  else 0.13
-        acad= 60./ast if ast>0 else 158.
-
+        sv=float(np.std(strl)/(np.mean(strl)+1e-9)*100) if len(strl)>2 else 3.5; asl=float(np.mean(strl)) if strl else 1.35; ast=float(np.mean(stt)) if stt else .38; aft=float(np.mean(flt)) if flt else .13; acad=60./ast if ast>0 else 158.
+        for fm in self.frame_metrics: fm.stride_length=asl; fm.step_time=ast; fm.flight_time=aft; fm.cadence=acad; fm.gait_symmetry=sym; fm.stride_variability=sv
+        hip_x = [p.kp.hip_center[0] for p in self.pose_frames]; lat_bal = clamp01(np.std(hip_x) / (max(1, np.mean([p.bbox[2] for p in self.pose_frames]))*0.1) if hip_x else 0.)
         for fm in self.frame_metrics:
-            fm.stride_length=asl; fm.step_time=ast; fm.flight_time=aft
-            fm.cadence=acad; fm.gait_symmetry=sym; fm.stride_variability=sv
+            sr=max(0.,(100-fm.gait_symmetry)/100); vr=min(1.,fm.stride_variability/25); lr=min(1.,fm.trunk_lean/40); fm.fall_risk = clamp01(sr*.3 + vr*.2 + lr*.2 + lat_bal*.3); ar=min(1.,abs(fm.acceleration)/12); fm.injury_risk=fm.joint_stress*.5+ar*.3+fm.fatigue_index*.2
 
-        for fm in self.frame_metrics:
-            sym_r =max(0.,(100-fm.gait_symmetry)/100)
-            var_r =min(1.,fm.stride_variability/25)
-            lean_r=min(1.,fm.trunk_lean/40)
-            fm.fall_risk=sym_r*0.4+var_r*0.3+lean_r*0.3
-            acc_r=min(1.,abs(fm.acceleration)/12)
-            fm.injury_risk=fm.joint_stress*0.5+acc_r*0.3+fm.fatigue_index*0.2
+    def _draw_trail(self,frame):
+        pts=list(self._trail)
+        if len(pts)<2: return frame
+        ov=frame.copy()
+        for i in range(1,len(pts)): t=i/len(pts); col=lerp_color((40,40,120),(0,220,255),t); cv2.line(ov,pts[i-1],pts[i],col,max(1,int(t*4)),cv2.LINE_AA)
+        cv2.circle(ov,pts[0],3,(80,80,180),-1,cv2.LINE_AA); frame[:]=cv2.addWeighted(ov,.55,frame,.45,0); return frame
 
-    # ── MOTION TRAIL ─────────────────────────────────────────────────────────
-
-    def _draw_trail(self, frame):
-        """Fading colour trail of the player's path."""
-        pts = list(self._trail)
-        if len(pts) < 2:
-            return frame
-        ov = frame.copy()
-        for i in range(1, len(pts)):
-            t     = i / len(pts)                       # 0=old, 1=newest
-            alpha = t * 0.55
-            col   = lerp_color((40,40,120), (0,220,255), t)
-            thick = max(1, int(t * 4))
-            cv2.line(ov, pts[i-1], pts[i], col, thick, cv2.LINE_AA)
-        # Dot at oldest visible point
-        cv2.circle(ov, pts[0], 3, (80,80,180), -1, cv2.LINE_AA)
-        frame[:] = cv2.addWeighted(ov, 0.55, frame, 0.45, 0)
-        return frame
-
-    # ── PLAYER AURA ───────────────────────────────────────────────────────────
-
-    def _draw_player_aura(self, frame, kp, fm):
-        """Speed-reactive glow ellipse around the player silhouette."""
-        if fm.speed < 0.5:
-            return frame
-        hx, hy = int(kp.hip_center[0]), int(kp.hip_center[1])
-        bx, by, bw, bh = self.pose_frames[-1].bbox
-        rx = max(12, bw // 2 + 6)
-        ry = max(20, bh // 2 + 10)
-        intensity = clamp01(fm.speed / 8.)
-        col = lerp_color((0,180,60), (0,60,255), intensity)
-
-        # Accel burst: extra shockwave ring
-        if self._accel_burst > 0:
-            burst_r = int(rx * 1.6 + self._accel_burst * 3)
-            burst_alpha = self._accel_burst / 8. * 0.4
-            ov = frame.copy()
-            cv2.ellipse(ov, (hx, hy), (burst_r, int(burst_r*1.4)),
-                        0, 0, 360, (0,200,255), 3, cv2.LINE_AA)
-            frame[:] = cv2.addWeighted(ov, burst_alpha, frame, 1-burst_alpha, 0)
-
-        # Soft glow halo (2 layers)
-        for expansion, a in [(14, 0.12), (6, 0.20)]:
-            ov = frame.copy()
-            cv2.ellipse(ov, (hx, hy), (rx+expansion, ry+expansion),
-                        0, 0, 360, col, -1, cv2.LINE_AA)
-            frame[:] = cv2.addWeighted(ov, a, frame, 1-a, 0)
-        return frame
-
-    # ── ANNOTATION ────────────────────────────────────────────────────────────
-
-    def _annotate(self, frame, pf, fm, W, H):
-        kp  = pf.kp
-        rt  = clamp01(fm.risk_score / 100.)
-
-        # Gradient skeleton with risk colouring
-        render_skeleton(frame, kp, risk_tint=rt)
-
-        hx, hy = int(kp.hip_center[0]), int(kp.hip_center[1])
-
-        # ── Player ID badge (pill shape above head) ───────────────────────────
-        head_y = int(kp.head[1]) - 28
-        badge_txt = f"  #{self.player_id}  "
-        (tw, th), _ = cv2.getTextSize(badge_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.62, 2)
-        bx0 = hx - tw//2 - 4
-        cv2.rectangle(frame, (bx0, head_y-20), (bx0+tw+8, head_y+4), (255,220,0), -1)
-        cv2.rectangle(frame, (bx0, head_y-20), (bx0+tw+8, head_y+4), (0,0,0), 1)
-        cv2.putText(frame, badge_txt, (bx0+4, head_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0,0,0), 2, cv2.LINE_AA)
-
-        # ── Speed vector arrow ────────────────────────────────────────────────
-        if fm.speed > 0.3 and len(self.pose_frames) >= 2:
-            prev = self.pose_frames[-2]
-            dx = kp.hip_center[0] - prev.kp.hip_center[0]
-            dy = kp.hip_center[1] - prev.kp.hip_center[1]
-            mag = math.hypot(dx, dy) + 1e-6
-            ar  = int(min(fm.speed * 14, 90))
-            ex, ey = int(hx + dx/mag*ar), int(hy + dy/mag*ar)
-            sc2 = risk_color(fm.speed / 10. * 100)
-            # Thick glow arrow
-            cv2.arrowedLine(frame, (hx,hy), (ex,ey), sc2, 4, cv2.LINE_AA, tipLength=0.32)
-            cv2.arrowedLine(frame, (hx,hy), (ex,ey), (255,255,255), 1, cv2.LINE_AA, tipLength=0.32)
-            # Speed label with background pill
-            spd_txt = f"{fm.speed:.1f} m/s"
-            (stw, sth), _ = cv2.getTextSize(spd_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 2)
-            sx, sy = ex+6, ey-4
-            cv2.rectangle(frame, (sx-2, sy-sth-2), (sx+stw+4, sy+4), (0,0,0), -1)
-            cv2.putText(frame, spd_txt, (sx, sy),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, sc2, 2, cv2.LINE_AA)
-
-        # ── Joint stress rings on knees ────────────────────────────────────────
-        for kpt, ang, stress in [
-            (kp.left_knee,  fm.left_knee_angle,  fm.joint_stress),
-            (kp.right_knee, fm.right_knee_angle, fm.joint_stress),
-        ]:
-            kx, ky = int(kpt[0]), int(kpt[1])
-            ac = (0,220,0) if ang>145 else (0,140,255) if ang>120 else (0,0,220)
-            # Stress ring — pulses when under load
-            if ang < 130:
-                pulse = int(8 + 3 * math.sin(len(self.pose_frames) * 0.4))
-                ov = frame.copy()
-                cv2.circle(ov, (kx,ky), pulse, (0,0,255), 2, cv2.LINE_AA)
-                frame[:] = cv2.addWeighted(ov, 0.6, frame, 0.4, 0)
-            cv2.putText(frame, f"{ang:.0f}°", (kx+8, ky-5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, ac, 1, cv2.LINE_AA)
-
-        # ── Direction change flash ────────────────────────────────────────────
+    def _annotate(self,frame,pf,fm,W,H):
+        kp=pf.kp; rt=clamp01(fm.risk_score/100.); render_skeleton(frame,kp,risk_tint=rt); hx,hy=int(kp.hip_center[0]),int(kp.hip_center[1]); head_y=int(kp.head[1])-28; badge=f"  #{self.player_id}  "; (tw,th),_=cv2.getTextSize(badge,cv2.FONT_HERSHEY_SIMPLEX,.62,2); bx0=hx-tw//2-4
+        cv2.rectangle(frame,(bx0,head_y-20),(bx0+tw+8,head_y+4),(255,220,0),-1); cv2.rectangle(frame,(bx0,head_y-20),(bx0+tw+8,head_y+4),(0,0,0),1); cv2.putText(frame,badge,(bx0+4,head_y),cv2.FONT_HERSHEY_SIMPLEX,.62,(0,0,0),2,cv2.LINE_AA)
+        if fm.speed>.3 and len(self.pose_frames)>=2:
+            prev=self.pose_frames[-2]; dx=kp.hip_center[0]-prev.kp.hip_center[0]; dy=kp.hip_center[1]-prev.kp.hip_center[1]; mag=math.hypot(dx,dy)+1e-6; ar=int(min(fm.speed*14,90)); ex,ey=int(hx+dx/mag*ar),int(hy+dy/mag*ar); sc2=risk_color(fm.speed/10.*100); cv2.arrowedLine(frame,(hx,hy),(ex,ey),sc2,4,cv2.LINE_AA,tipLength=.32); cv2.arrowedLine(frame,(hx,hy),(ex,ey),(255,255,255),1,cv2.LINE_AA,tipLength=.32); spdt=f"{fm.speed:.1f} m/s"; (stw,sth),_=cv2.getTextSize(spdt,cv2.FONT_HERSHEY_SIMPLEX,.52,2); cv2.rectangle(frame,(ex+4,ey-sth-4),(ex+stw+8,ey+4),(0,0,0),-1); cv2.putText(frame,spdt,(ex+6,ey),cv2.FONT_HERSHEY_SIMPLEX,.52,sc2,2,cv2.LINE_AA)
+        for kpt,ang in [(kp.left_knee,fm.left_knee_angle),(kp.right_knee,fm.right_knee_angle)]:
+            kx,ky=int(kpt[0]),int(kpt[1]); ac=(0,220,0) if ang>145 else (0,140,255) if ang>120 else (0,0,220)
+            if ang<130:
+                pulse=int(8+3*math.sin(len(self.pose_frames)*.4)); ov=frame.copy(); cv2.circle(ov,(kx,ky),pulse,(0,0,255),2,cv2.LINE_AA); frame[:]=cv2.addWeighted(ov,.6,frame,.4,0)
+            cv2.putText(frame,f"{ang:.0f}°",(kx+8,ky-5),cv2.FONT_HERSHEY_SIMPLEX,.44,ac,1,cv2.LINE_AA)
         if fm.direction_change:
-            ov = frame.copy()
-            cv2.rectangle(ov, (0,0), (W,H), (0,0,180), 6)
-            frame[:] = cv2.addWeighted(ov, 0.55, frame, 0.45, 0)
-            # Centred bold label
-            label = "DIRECTION CHANGE"
-            (lw,_),_ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 1.1, 2)
-            cv2.rectangle(frame, (W//2-lw//2-10, H-52), (W//2+lw//2+10, H-16), (0,0,0), -1)
-            cv2.putText(frame, label, (W//2-lw//2, H-24),
-                        cv2.FONT_HERSHEY_DUPLEX, 1.1, (0,100,255), 2, cv2.LINE_AA)
+            ov=frame.copy(); cv2.rectangle(ov,(0,0),(W,H),(0,0,180),6); frame[:]=cv2.addWeighted(ov,.55,frame,.45,0); lbl="DIRECTION CHANGE"; (lw,_),_=cv2.getTextSize(lbl,cv2.FONT_HERSHEY_DUPLEX,1.1,2); cv2.rectangle(frame,(W//2-lw//2-10,H-52),(W//2+lw//2+10,H-16),(0,0,0),-1); cv2.putText(frame,lbl,(W//2-lw//2,H-24),cv2.FONT_HERSHEY_DUPLEX,1.1,(0,100,255),2,cv2.LINE_AA)
+        draw_risk_gauge(frame,W-70,H-80,44,fm.risk_score); return frame
 
-        # ── Mini risk gauge (arc) ─────────────────────────────────────────────
-        gx, gy = W-70, H-80
-        draw_risk_gauge(frame, gx, gy, 44, fm.risk_score)
-
+    def _draw_player_aura(self,frame,kp,fm):
+        if fm.speed<.5: return frame
+        hx,hy=int(kp.hip_center[0]),int(kp.hip_center[1]); bx,by,bw,bh=self.pose_frames[-1].bbox; rx=max(12,bw//2+6); ry=max(20,bh//2+10); col=lerp_color((0,180,60),(0,60,255),clamp01(fm.speed/8.))
+        if self._accel_burst>0:
+            br=int(rx*1.6+self._accel_burst*3); ba=self._accel_burst/8.*.4; ov=frame.copy(); cv2.ellipse(ov,(hx,hy),(br,int(br*1.4)),0,0,360,(0,200,255),3,cv2.LINE_AA); frame[:]=cv2.addWeighted(ov,ba,frame,1-ba,0)
+        for exp,a in [(14,.12),(6,.20)]:
+            ov=frame.copy(); cv2.ellipse(ov,(hx,hy),(rx+exp,ry+exp),0,0,360,col,-1,cv2.LINE_AA); frame[:]=cv2.addWeighted(ov,a,frame,1-a,0)
         return frame
 
-    # ── HUD ───────────────────────────────────────────────────────────────────
+    def _draw_stat_bar(self,frame,x,y,w,h,val,mx,col,lbl,fmt):
+        filled=int(w*clamp01(val/max(mx,1e-6))); cv2.rectangle(frame,(x,y),(x+w,y+h),(35,35,35),-1)
+        for px in range(filled): t=px/max(w-1,1); cv2.line(frame,(x+px,y+1),(x+px,y+h-1),lerp_color(col,lerp_color(col,(255,255,255),.4),t),1)
+        cv2.rectangle(frame,(x,y),(x+w,y+h),(60,60,60),1); cv2.putText(frame,lbl,(x-2,y+h-2),cv2.FONT_HERSHEY_SIMPLEX,.34,(160,160,160),1,cv2.LINE_AA)
+        vt=fmt.format(val); (vw,_),_=cv2.getTextSize(vt,cv2.FONT_HERSHEY_SIMPLEX,.38,1); cv2.putText(frame,vt,(x+w+4,y+h-2),cv2.FONT_HERSHEY_SIMPLEX,.38,col,1,cv2.LINE_AA)
 
-    def _draw_stat_bar(self, frame, x, y, w, h, value, max_val, col, label, val_fmt):
-        """Horizontal animated stat bar: label | ████░░░ | value"""
-        filled = int(w * clamp01(value / max(max_val, 1e-6)))
-        # Background
-        cv2.rectangle(frame, (x, y), (x+w, y+h), (35,35,35), -1)
-        # Fill with gradient
-        if filled > 0:
-            for px in range(filled):
-                t = px / max(w-1, 1)
-                bc = lerp_color(col, lerp_color(col,(255,255,255),0.4), t)
-                cv2.line(frame, (x+px, y+1), (x+px, y+h-1), bc, 1)
-        # Border
-        cv2.rectangle(frame, (x, y), (x+w, y+h), (60,60,60), 1)
-        # Label left
-        cv2.putText(frame, label, (x-2, y+h-2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, (160,160,160), 1, cv2.LINE_AA)
-        # Value right
-        val_txt = val_fmt.format(value)
-        (vw,_),_ = cv2.getTextSize(val_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
-        cv2.putText(frame, val_txt, (x+w+4, y+h-2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, col, 1, cv2.LINE_AA)
+    def _draw_sparkline(self,frame,x,y,w,h,vals,col=(0,255,200)):
+        v=list(vals)
+        if len(v)<2: return
+        cv2.rectangle(frame,(x,y),(x+w,y+h),(20,20,20),-1); cv2.rectangle(frame,(x,y),(x+w,y+h),(50,50,50),1); mx=max(max(v),.1); pts=[(x+int(i/(len(v)-1)*w),y+h-int(clamp01(vi/mx)*(h-2))-1) for i,vi in enumerate(v)]
+        for i in range(1,len(pts)): cv2.line(frame,pts[i-1],pts[i],lerp_color((0,120,100),col,i/len(pts)),2,cv2.LINE_AA)
+        cv2.circle(frame,pts[-1],3,(255,255,255),-1,cv2.LINE_AA); cv2.putText(frame,f"{v[-1]:.1f}",(x+w+3,y+h),cv2.FONT_HERSHEY_SIMPLEX,.34,col,1,cv2.LINE_AA)
 
-    def _draw_sparkline(self, frame, x, y, w, h, values, col=(0,255,200)):
-        """Mini speed graph — last N values drawn as a line chart."""
-        vals = list(values)
-        if len(vals) < 2:
-            return
-        cv2.rectangle(frame, (x, y), (x+w, y+h), (20,20,20), -1)
-        cv2.rectangle(frame, (x, y), (x+w, y+h), (50,50,50), 1)
-        mx = max(max(vals), 0.1)
-        pts = []
-        for i, v in enumerate(vals):
-            px = x + int(i / (len(vals)-1) * w)
-            py = y + h - int(clamp01(v/mx) * (h-2)) - 1
-            pts.append((px, py))
-        for i in range(1, len(pts)):
-            t = i / len(pts)
-            lc = lerp_color((0,120,100), col, t)
-            cv2.line(frame, pts[i-1], pts[i], lc, 2, cv2.LINE_AA)
-        # Current value dot
-        cv2.circle(frame, pts[-1], 3, (255,255,255), -1, cv2.LINE_AA)
-        # Axis label
-        cv2.putText(frame, f"{vals[-1]:.1f}", (x+w+3, y+h),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, col, 1, cv2.LINE_AA)
-
-    def _hud(self, frame, idx, ts, total, visible=True):
-        H, W = frame.shape[:2]
-        fps = self._fps_cache
-
-        # ── Left panel (broadcast sidebar) ───────────────────────────────────
-        PW = 230   # panel width
-        PH = H
-        ov = frame.copy()
-        cv2.rectangle(ov, (0,0), (PW, PH), (8,8,12), -1)
-        frame[:] = cv2.addWeighted(ov, 0.72, frame, 0.28, 0)
-
-        # Gold accent line
-        cv2.line(frame, (PW-1, 0), (PW-1, PH), (255,215,0), 2)
-
-        # ── Header ────────────────────────────────────────────────────────────
-        # Logo bar
-        cv2.rectangle(frame, (0,0), (PW, 42), (20,20,28), -1)
-        cv2.line(frame, (0,42), (PW,42), (255,215,0), 1)
-        # Juventus B&W mini badge
-        cv2.rectangle(frame, (6,6), (34,36), (255,255,255), -1)
-        cv2.rectangle(frame, (20,6), (34,36), (0,0,0), -1)
-        cv2.putText(frame, "JUV", (7,30), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0,0,0), 1)
-        cv2.putText(frame, "ANALYTICS", (38,18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255,215,0), 1, cv2.LINE_AA)
-        cv2.putText(frame, "SPORTS SCIENCE", (38,34),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, (160,160,160), 1, cv2.LINE_AA)
-
-        # Tracker state pill
-        t_state = self.tracker.state
-        dot_col = {"pending":(0,200,255),"tracking":(0,220,0),"lost":(0,80,255)}.get(t_state,(150,150,150))
-        state_txt = {"pending":"ACQUIRING","tracking":"LIVE","lost":"SEARCHING"}.get(t_state,"")
-        cv2.circle(frame, (10,54), 5, dot_col, -1, cv2.LINE_AA)
-        cv2.putText(frame, state_txt, (20,59),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, dot_col, 1, cv2.LINE_AA)
-        # Timecode right-aligned
-        tc = f"{int(ts//60):02d}:{ts%60:05.2f}"
-        (tcw,_),_ = cv2.getTextSize(tc, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
-        cv2.putText(frame, tc, (PW-tcw-6, 59),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160,160,160), 1, cv2.LINE_AA)
-
-        # Player badge
-        cv2.rectangle(frame, (0,66), (PW,92), (18,18,26), -1)
-        cv2.putText(frame, f"PLAYER  #{self.player_id}", (8,84),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.52, (255,215,0), 1, cv2.LINE_AA)
-
+    def _hud(self,frame,idx,ts,total,visible=True):
+        H,W=frame.shape[:2]; fps=self._fps_cache; PW=230; ov=frame.copy(); cv2.rectangle(ov,(0,0),(PW,H),(8,8,12),-1); frame[:]=cv2.addWeighted(ov,.72,frame,.28,0); cv2.line(frame,(PW-1,0),(PW-1,H),(255,215,0),2); cv2.rectangle(frame,(0,0),(PW,42),(20,20,28),-1); cv2.line(frame,(0,42),(PW,42),(255,215,0),1); cv2.rectangle(frame,(6,6),(34,36),(255,255,255),-1); cv2.rectangle(frame,(20,6),(34,36),(0,0,0),-1); cv2.putText(frame,"JUV",(7,30),cv2.FONT_HERSHEY_SIMPLEX,.42,(0,0,0),1); cv2.putText(frame,"ANALYTICS",(38,18),cv2.FONT_HERSHEY_SIMPLEX,.42,(255,215,0),1,cv2.LINE_AA); dm=_detection_layer.mode.upper() if _detection_layer else "BLOB"; cv2.putText(frame,f"SPORTS SCIENCE  [{dm}]",(38,34),cv2.FONT_HERSHEY_SIMPLEX,.28,(120,120,120),1,cv2.LINE_AA); ts_=self.lock.state; dc={"searching":(0,200,255),"tracking":(0,220,0),"lost":(0,80,255)}.get(ts_,(150,150,150)); st={"searching":"ACQUIRING","tracking":"LIVE","lost":"SEARCHING"}.get(ts_,""); cv2.circle(frame,(10,54),5,dc,-1,cv2.LINE_AA); cv2.putText(frame,st,(20,59),cv2.FONT_HERSHEY_SIMPLEX,.38,dc,1,cv2.LINE_AA); tc=f"{int(ts//60):02d}:{ts%60:05.2f}"; (tcw,_),_=cv2.getTextSize(tc,cv2.FONT_HERSHEY_SIMPLEX,.38,1); cv2.putText(frame,tc,(PW-tcw-6,59),cv2.FONT_HERSHEY_SIMPLEX,.38,(160,160,160),1,cv2.LINE_AA); cv2.rectangle(frame,(0,66),(PW,92),(18,18,26),-1); cv2.putText(frame,f"PLAYER  #{self.player_id}",(8,84),cv2.FONT_HERSHEY_DUPLEX,.52,(255,215,0),1,cv2.LINE_AA)
         if self.frame_metrics:
-            fm = self.frame_metrics[-1]
-            rc = risk_color(fm.risk_score)
-
-            # ── Speed section ─────────────────────────────────────────────────
-            y0 = 100
-            cv2.putText(frame, "VELOCITY", (8, y0),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (120,120,120), 1, cv2.LINE_AA)
-            cv2.line(frame, (0, y0+3), (PW, y0+3), (30,30,40), 1)
-
-            # Big speed number
-            spd_txt = f"{fm.speed:.1f}"
-            cv2.putText(frame, spd_txt, (8, y0+38),
-                        cv2.FONT_HERSHEY_DUPLEX, 1.4, (0,255,200), 2, cv2.LINE_AA)
-            cv2.putText(frame, "m/s", (8 + int(len(spd_txt)*22), y0+38),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (80,200,160), 1, cv2.LINE_AA)
-
-            # Sparkline
-            self._draw_sparkline(frame, 8, y0+44, PW-20, 28,
-                                 self._speed_history, (0,255,200))
-            cv2.putText(frame, "3s SPEED HISTORY", (8, y0+84),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, (80,80,80), 1, cv2.LINE_AA)
-
-            # ── Stat bars ─────────────────────────────────────────────────────
-            y1 = y0 + 96
-            BAR_W = 80
-            BAR_H = 7
-            BX    = 68   # bar x start (after label)
-
-            stats = [
-                ("CADENCE",  fm.cadence,           220., (0,200,255),  "{:.0f} spm"),
-                ("STRIDE",   fm.stride_length,      2.5,  (0,255,180),  "{:.2f} m"),
-                ("ENERGY",   fm.energy_expenditure, 900., (0,180,255),  "{:.0f} kc"),
-                ("GAIT SYM", fm.gait_symmetry,      100., (0,255,150),  "{:.0f}%"),
-                ("TRUNK",    fm.trunk_lean,          30.,  (0,200,220),  "{:.1f}°"),
-            ]
-            for i, (lbl, val, mx, col, fmt) in enumerate(stats):
-                sy = y1 + i * 22
-                cv2.putText(frame, lbl, (6, sy+BAR_H),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.30, (110,110,110), 1, cv2.LINE_AA)
-                self._draw_stat_bar(frame, BX, sy, BAR_W, BAR_H, val, mx, col, "", fmt)
-
-            # ── Knee angles ───────────────────────────────────────────────────
-            y2 = y1 + len(stats)*22 + 8
-            cv2.putText(frame, "JOINT ANGLES", (8, y2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (120,120,120), 1, cv2.LINE_AA)
-            cv2.line(frame, (0, y2+3), (PW, y2+3), (30,30,40), 1)
-
-            for ki, (side, ang, col) in enumerate([
-                ("L KNEE", fm.left_knee_angle,  (255,180,0)),
-                ("R KNEE", fm.right_knee_angle, (0,140,255)),
-            ]):
-                sy = y2 + 14 + ki*20
-                arc_col = (0,220,0) if ang>145 else (0,140,255) if ang>120 else (0,0,220)
-                cv2.putText(frame, side, (6, sy+10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, (110,110,110), 1, cv2.LINE_AA)
-                self._draw_stat_bar(frame, BX, sy, BAR_W, BAR_H, ang, 180., arc_col, "", "{:.0f}°")
-
-            # ── Valgus ────────────────────────────────────────────────────────
-            y3 = y2 + 14 + 2*20 + 6
-            cv2.putText(frame, "VALGUS", (8, y3),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (120,120,120), 1, cv2.LINE_AA)
-            cv2.line(frame, (0, y3+3), (PW, y3+3), (30,30,40), 1)
-            for ki, (side, val) in enumerate([("L", fm.l_valgus), ("R", fm.r_valgus)]):
-                sy = y3 + 14 + ki*20
-                vc = (0,220,0) if val<0.1 else (0,140,255) if val<0.2 else (0,0,220)
-                cv2.putText(frame, side, (6, sy+10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, (110,110,110), 1, cv2.LINE_AA)
-                self._draw_stat_bar(frame, BX, sy, BAR_W, BAR_H, val, 0.4, vc, "", "{:.2f}")
-
-            # ── Risk section ──────────────────────────────────────────────────
-            y4 = y3 + 14 + 2*20 + 8
-            cv2.putText(frame, "INJURY RISK", (8, y4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (120,120,120), 1, cv2.LINE_AA)
-            cv2.line(frame, (0, y4+3), (PW, y4+3), (30,30,40), 1)
-
-            # Big risk score
-            risk_txt = f"{fm.risk_score:.0f}"
-            cv2.putText(frame, risk_txt, (8, y4+38),
-                        cv2.FONT_HERSHEY_DUPLEX, 1.4, rc, 2, cv2.LINE_AA)
-            cv2.putText(frame, "/ 100", (8+int(len(risk_txt)*22), y4+38),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (80,80,80), 1, cv2.LINE_AA)
-
-            # Risk label pill
-            risk_lbl = self._risk_label(fm.injury_risk)
-            lbl_col  = (0,200,0) if risk_lbl=="Low" else (0,140,255) if risk_lbl=="Moderate" else (0,0,220)
-            (rlw,_),_ = cv2.getTextSize(risk_lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
-            rx0 = 8; ry0 = y4+44
-            cv2.rectangle(frame, (rx0, ry0), (rx0+rlw+10, ry0+18), lbl_col, -1)
-            cv2.putText(frame, risk_lbl, (rx0+5, ry0+13),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0,0,0), 1, cv2.LINE_AA)
-
-            # Sub-risk bars
-            for ki, (lbl, val, mx, col) in enumerate([
-                ("FALL",    fm.fall_risk,    1., (0,200,255)),
-                ("JOINT",   fm.joint_stress, 1., (0,140,255)),
-                ("FATIGUE", fm.fatigue_index,1., (0,100,220)),
-            ]):
-                sy = y4 + 68 + ki*20
-                cv2.putText(frame, lbl, (6, sy+8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.28, (100,100,100), 1, cv2.LINE_AA)
-                self._draw_stat_bar(frame, BX, sy, BAR_W, 6, val, mx,
-                                    risk_color(val*100), "", "{:.2f}")
-
-        # ── Progress bar at very bottom of panel ──────────────────────────────
-        prog = clamp01(ts / max(total/fps, 1e-6))
-        pbar_y = H - 18
-        cv2.rectangle(frame, (0, pbar_y), (PW, H), (15,15,20), -1)
-        if prog > 0:
-            cv2.rectangle(frame, (0, pbar_y+2), (int(PW*prog), H-2), (255,215,0), -1)
-        cv2.putText(frame, f"{prog*100:.0f}%", (PW//2-10, H-4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0,0,0) if prog>0.3 else (120,120,120),
-                    1, cv2.LINE_AA)
-
-        # ── Risk bar along bottom of whole frame ──────────────────────────────
+            fm=self.frame_metrics[-1]; rc=risk_color(fm.risk_score); y0=100; cv2.putText(frame,"VELOCITY",(8,y0),cv2.FONT_HERSHEY_SIMPLEX,.33,(120,120,120),1,cv2.LINE_AA); cv2.line(frame,(0,y0+3),(PW,y0+3),(30,30,40),1); spdt=f"{fm.speed:.1f}"; cv2.putText(frame,spdt,(8,y0+38),cv2.FONT_HERSHEY_DUPLEX,1.4,(0,255,200),2,cv2.LINE_AA); cv2.putText(frame,"m/s",(8+int(len(spdt)*22),y0+38),cv2.FONT_HERSHEY_SIMPLEX,.42,(80,200,160),1,cv2.LINE_AA); self._draw_sparkline(frame,8,y0+44,PW-20,28,self._speed_history); cv2.putText(frame,"3s SPEED HISTORY",(8,y0+84),cv2.FONT_HERSHEY_SIMPLEX,.28,(80,80,80),1,cv2.LINE_AA); y1=y0+96; BW=80; BH=7; BX=68
+            for i,(lbl,val,mx,col,fmt) in enumerate([("CADENCE",fm.cadence,220.,(0,200,255),"{:.0f} spm"),("STRIDE",fm.stride_length,2.5,(0,255,180),"{:.2f} m"),("ENERGY",fm.energy_expenditure,900.,(0,180,255),"{:.0f} kc"),("GAIT SYM",fm.gait_symmetry,100.,(0,255,150),"{:.0f}%"),("TRUNK",fm.trunk_lean,30.,(0,200,220),"{:.1f}°")]): sy=y1+i*22; cv2.putText(frame,lbl,(6,sy+BH),cv2.FONT_HERSHEY_SIMPLEX,.30,(110,110,110),1,cv2.LINE_AA); self._draw_stat_bar(frame,BX,sy,BW,BH,val,mx,col,"",fmt)
+            y2=y1+5*22+8; cv2.putText(frame,"JOINT ANGLES",(8,y2),cv2.FONT_HERSHEY_SIMPLEX,.33,(120,120,120),1,cv2.LINE_AA); cv2.line(frame,(0,y2+3),(PW,y2+3),(30,30,40),1)
+            for ki,(s,ang) in enumerate([("L KNEE",fm.left_knee_angle),("R KNEE",fm.right_knee_angle)]): sy=y2+14+ki*20; ac=(0,220,0) if ang>145 else (0,140,255) if ang>120 else (0,0,220); cv2.putText(frame,s,(6,sy+10),cv2.FONT_HERSHEY_SIMPLEX,.32,(110,110,110),1,cv2.LINE_AA); self._draw_stat_bar(frame,BX,sy,BW,BH,ang,180.,ac,"","{:.0f}°")
+            y3=y2+14+2*20+6; cv2.putText(frame,"VALGUS",(8,y3),cv2.FONT_HERSHEY_SIMPLEX,.33,(120,120,120),1,cv2.LINE_AA); cv2.line(frame,(0,y3+3),(PW,y3+3),(30,30,40),1)
+            for ki,(s,val) in enumerate([("L",fm.l_valgus),("R",fm.r_valgus)]): sy=y3+14+ki*20; vc=(0,220,0) if val<.1 else (0,140,255) if val<.2 else (0,0,220); cv2.putText(frame,s,(6,sy+10),cv2.FONT_HERSHEY_SIMPLEX,.32,(110,110,110),1,cv2.LINE_AA); self._draw_stat_bar(frame,BX,sy,BW,BH,val,.4,vc,"","{:.2f}")
+            y4=y3+14+2*20+8; cv2.putText(frame,"INJURY RISK",(8,y4),cv2.FONT_HERSHEY_SIMPLEX,.33,(120,120,120),1,cv2.LINE_AA); cv2.line(frame,(0,y4+3),(PW,y4+3),(30,30,40),1); rt=f"{fm.risk_score:.0f}"; cv2.putText(frame,rt,(8,y4+38),cv2.FONT_HERSHEY_DUPLEX,1.4,rc,2,cv2.LINE_AA); cv2.putText(frame,"/ 100",(8+int(len(rt)*22),y4+38),cv2.FONT_HERSHEY_SIMPLEX,.4,(80,80,80),1,cv2.LINE_AA); rl=self._risk_label(fm.injury_risk); lc=(0,200,0) if rl=="Low" else (0,140,255) if rl=="Moderate" else (0,0,220); (rlw,_),_=cv2.getTextSize(rl,cv2.FONT_HERSHEY_SIMPLEX,.42,1); rx0=8; ry0=y4+44; cv2.rectangle(frame,(rx0,ry0),(rx0+rlw+10,ry0+18),lc,-1); cv2.putText(frame,rl,(rx0+5,ry0+13),cv2.FONT_HERSHEY_SIMPLEX,.42,(0,0,0),1,cv2.LINE_AA)
+            for ki,(lbl,val,mx,col) in enumerate([("FALL",fm.fall_risk,1.,(0,200,255)),("JOINT",fm.joint_stress,1.,(0,140,255)),("FATIGUE",fm.fatigue_index,1.,(0,100,220))]): sy=y4+68+ki*20; cv2.putText(frame,lbl,(6,sy+8),cv2.FONT_HERSHEY_SIMPLEX,.28,(100,100,100),1,cv2.LINE_AA); self._draw_stat_bar(frame,BX,sy,BW,6,val,mx,risk_color(val*100),"","{:.2f}")
+        prog=clamp01(ts/max(total/fps,1e-6)); pby=H-18; cv2.rectangle(frame,(0,pby),(PW,H),(15,15,20),-1)
+        if prog>0: cv2.rectangle(frame,(0,pby+2),(int(PW*prog),H-2),(255,215,0),-1); cv2.putText(frame,f"{prog*100:.0f}%",(PW//2-10,H-4),cv2.FONT_HERSHEY_SIMPLEX,.32,(0,0,0) if prog>.3 else (120,120,120),1,cv2.LINE_AA)
         if self.frame_metrics:
-            rc2 = risk_color(self.frame_metrics[-1].risk_score)
-            bw  = int((W-PW) * clamp01(self.frame_metrics[-1].risk_score/100.))
-            cv2.rectangle(frame, (PW, H-8), (W, H), (20,20,20), -1)
-            if bw > 0:
-                cv2.rectangle(frame, (PW, H-8), (PW+bw, H), rc2, -1)
-
-        # ── Out-of-frame banner ───────────────────────────────────────────────
-        if not visible and t_state == "lost":
-            bov = frame.copy()
-            cv2.rectangle(bov, (PW, H//2-35), (W, H//2+35), (0,0,0), -1)
-            frame[:] = cv2.addWeighted(bov, 0.70, frame, 0.30, 0)
-            cv2.putText(frame, f"PLAYER #{self.player_id} — OUT OF FRAME",
-                        (PW + 20, H//2+8),
-                        cv2.FONT_HERSHEY_DUPLEX, 0.75, (0,140,255), 2, cv2.LINE_AA)
-
+            rc2=risk_color(self.frame_metrics[-1].risk_score); bw=int((W-PW)*clamp01(self.frame_metrics[-1].risk_score/100.)); cv2.rectangle(frame,(PW,H-8),(W,H),(20,20,20),-1)
+            if bw>0: cv2.rectangle(frame,(PW,H-8),(PW+bw,H),rc2,-1)
+        if not visible and ts_=="lost":
+            bov=frame.copy(); cv2.rectangle(bov,(PW,H//2-35),(W,H//2+35),(0,0,0),-1); frame[:]=cv2.addWeighted(bov,.70,frame,.30,0); cv2.putText(frame,f"PLAYER #{self.player_id} — OUT OF FRAME",(PW+20,H//2+8),cv2.FONT_HERSHEY_DUPLEX,.75,(0,140,255),2,cv2.LINE_AA)
         return frame
-
-    # ── SUMMARY ───────────────────────────────────────────────────────────────
 
     def _build_summary(self):
         if not self.frame_metrics: return
-        fms=self.frame_metrics; s=self.summary
-        sc=self.PIX_TO_M or 0.002
-
-        s.total_frames=len(fms); s.duration_seconds=fms[-1].timestamp
-        spds=np.array([f.speed for f in fms])
-        s.avg_speed=float(np.mean(spds)); s.max_speed=float(np.max(spds))
-
+        fms=self.frame_metrics; s=self.summary; sc=self.PIX_TO_M or 0.002; s.total_frames=len(fms); s.duration_seconds=fms[-1].timestamp; spds=np.array([f.speed for f in fms]); s.avg_speed=float(np.mean(spds)); s.max_speed=float(np.max(spds))
         def anz(a): v=[getattr(f,a) for f in fms if getattr(f,a)>0]; return float(np.mean(v)) if v else 0.
-        s.avg_stride_length=anz("stride_length"); s.avg_step_time=anz("step_time")
-        s.avg_cadence=anz("cadence"); s.avg_flight_time=anz("flight_time")
-        s.estimated_energy_kcal_hr=float(np.mean([f.energy_expenditure for f in fms]))
-        s.gait_symmetry_pct=float(np.mean([f.gait_symmetry for f in fms]))
-        s.stride_variability_pct=float(np.mean([f.stride_variability for f in fms]))
-        dc=sum(1 for f in fms if f.direction_change)
-        s.direction_change_freq=dc/max(s.duration_seconds/60,1e-6)
-        s.peak_risk_score=float(np.max([f.risk_score for f in fms]))
+        s.avg_stride_length=anz("stride_length"); s.avg_step_time=anz("step_time"); s.avg_cadence=anz("cadence"); s.avg_flight_time=anz("flight_time"); s.estimated_energy_kcal_hr=float(np.mean([f.energy_expenditure for f in fms])); s.gait_symmetry_pct=float(np.mean([f.gait_symmetry for f in fms])); s.stride_variability_pct=float(np.mean([f.stride_variability for f in fms]))
+        dc=sum(1 for f in fms if f.direction_change); s.direction_change_freq=dc/max(s.duration_seconds/60,1e-6); s.peak_risk_score=float(np.max([f.risk_score for f in fms]))
+        if len(self.pose_frames)>=2: s.total_distance_m=sum(dist2d(self.pose_frames[i].kp.hip_center,self.pose_frames[i-1].kp.hip_center)*sc for i in range(1,len(self.pose_frames)))
+        def rl(a): return self._risk_label(float(np.mean([getattr(f,a) for f in fms]))); s.fall_risk_label=rl("fall_risk"); s.injury_risk_label=rl("injury_risk"); s.body_stress_label=rl("joint_stress"); s.fatigue_label=rl("fatigue_index"); ai=float(np.mean([f.injury_risk for f in fms])); s.injury_risk_detail="high knee load" if ai>.5 else "moderate joint stress" if ai>.3 else "within normal range"
 
-        if len(self.pose_frames)>=2:
-            s.total_distance_m=sum(
-                dist2d(self.pose_frames[i].kp.hip_center,
-                       self.pose_frames[i-1].kp.hip_center)*sc
-                for i in range(1,len(self.pose_frames)))
-
-        def rl(a): return self._risk_label(float(np.mean([getattr(f,a) for f in fms])))
-        s.fall_risk_label=rl("fall_risk"); s.injury_risk_label=rl("injury_risk")
-        s.body_stress_label=rl("joint_stress"); s.fatigue_label=rl("fatigue_index")
-        ai=float(np.mean([f.injury_risk for f in fms]))
-        s.injury_risk_detail=("high knee load" if ai>0.5
-                              else "moderate joint stress" if ai>0.3
-                              else "within normal range")
+    def get_report_string(self) -> str:
+        s = self.summary
+        dm = _detection_layer.mode.upper() if _detection_layer else "BLOB"
+        
+        lines = []
+        width = 70
+        
+        # Header
+        lines.append("=" * width)
+        lines.append(f"JUVENTUS ANALYTICS v4 — Player #{s.player_id} [{dm}]".center(width))
+        lines.append("=" * width)
+        
+        # Session Overview
+        lines.append("")
+        lines.append("SESSION OVERVIEW")
+        lines.append("-" * width)
+        lines.append(f"  Duration        : {s.duration_seconds:>6.1f} s")
+        lines.append(f"  Total Frames    : {s.total_frames:>6}")
+        lines.append(f"  Total Distance  : {s.total_distance_m:>6.1f} m")
+        
+        # Player Metrics
+        lines.append("")
+        lines.append("PLAYER METRICS")
+        lines.append("-" * width)
+        lines.append(f"  Avg Speed       : {s.avg_speed:>6.2f} m/s")
+        lines.append(f"  Max Speed       : {s.max_speed:>6.2f} m/s")
+        lines.append(f"  Avg Stride      : {s.avg_stride_length:>6.2f} m")
+        lines.append(f"  Avg Cadence     : {s.avg_cadence:>6.0f} spm")
+        lines.append(f"  Avg Step Time   : {s.avg_step_time:>6.2f} s")
+        lines.append(f"  Changes/Min     : {s.direction_change_freq:>6.1f}")
+        lines.append(f"  Energy Burn     : {s.estimated_energy_kcal_hr:>6.0f} kcal/hr")
+        
+        # Risk Indicators
+        lines.append("")
+        lines.append("RISK INDICATORS")
+        lines.append("-" * width)
+        lines.append(f"  Peak Risk Score : {s.peak_risk_score:>6.0f} / 100")
+        lines.append(f"  Gait Symmetry   : {s.gait_symmetry_pct:>6.1f} %")
+        lines.append(f"  Fall Risk       : {s.fall_risk_label:<10}")
+        lines.append(f"  Injury Risk     : {s.injury_risk_label:<10}")
+        lines.append(f"  Body Stress     : {s.body_stress_label:<10}")
+        lines.append(f"  Fatigue Level   : {s.fatigue_label:<10}")
+        lines.append(f"  Risk Detail     : {s.injury_risk_detail:<20}")
+        
+        lines.append("")
+        lines.append("=" * width)
+        
+        return "\n".join(lines)
 
     @staticmethod
-    def _risk_label(v): return "Low" if v<0.25 else "Moderate" if v<0.55 else "High"
-
-    # ── EXPORT ────────────────────────────────────────────────────────────────
+    def _risk_label(v): 
+        return "Low" if v < .25 else "Moderate" if v < .55 else "High"
 
     def export_json(self, path):
-        with open(path,"w") as f:
-            json.dump({"player_summary":asdict(self.summary),
-                       "frame_metrics":[asdict(m) for m in self.frame_metrics]},f,indent=2)
+        with open(path, "w") as f:
+            json.dump({
+                "player_summary": asdict(self.summary),
+                "frame_metrics": [asdict(m) for m in self.frame_metrics]
+            }, f, indent=2)
         print(f"[EXPORT] JSON → {path}")
 
     def export_csv(self, path):
-        pd.DataFrame([asdict(m) for m in self.frame_metrics]).to_csv(path,index=False)
+        pd.DataFrame([asdict(m) for m in self.frame_metrics]).to_csv(path, index=False)
         print(f"[EXPORT] CSV  → {path}")
 
     def get_dataframe(self) -> pd.DataFrame:
         return pd.DataFrame([asdict(m) for m in self.frame_metrics])
 
     def print_report(self):
-        s=self.summary
-        print("\n"+"═"*54)
-        print(f"  JUVENTUS SPORTS ANALYTICS  —  Player #{s.player_id}")
-        print("═"*54)
-        print(f"  Duration        : {s.duration_seconds:.1f}s  ({s.total_frames} frames)")
-        print(f"  Total Distance  : {s.total_distance_m:.1f} m")
-        print()
-        print("  ── Player Metrics ──────────────────────────────")
-        print(f"  Speed (avg / max)        : {s.avg_speed:.2f} / {s.max_speed:.2f} m/s")
-        print(f"  Stride Length            : {s.avg_stride_length:.2f} m")
-        print(f"  Step Time                : {s.avg_step_time:.2f} s")
-        print(f"  Cadence                  : {s.avg_cadence:.0f} steps/min")
-        print(f"  Flight Time              : {s.avg_flight_time:.3f} s")
-        print(f"  Direction Change Freq    : {s.direction_change_freq:.1f} / min")
-        print(f"  Est. Energy Expenditure  : {s.estimated_energy_kcal_hr:.0f} kcal/hour")
-        print()
-        print("  ── Risk Indicators ─────────────────────────────")
-        print(f"  Peak Risk Score    : {s.peak_risk_score:.0f}/100")
-        print(f"  Fall Risk          : {s.fall_risk_label}")
-        print(f"  Injury Risk        : {s.injury_risk_label} ({s.injury_risk_detail})")
-        print(f"  Gait Symmetry      : {s.gait_symmetry_pct:.1f}%")
-        print(f"  Body Stress Level  : {s.body_stress_label}")
-        print(f"  Fatigue            : {s.fatigue_label}")
-        print("═"*54+"\n")
+        # Use the centralized report string for consistent formatting
+        print(self.get_report_string())

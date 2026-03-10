@@ -896,6 +896,12 @@ class SportsAnalyzer:
             raise RuntimeError("Could not identify any player candidates.")
         self.tracker = PlayerTracker(primary)
 
+        # ── Wow-factor state ──────────────────────────────────────────────────
+        self._trail: deque = deque(maxlen=60)        # hip positions for motion trail
+        self._speed_history: deque = deque(maxlen=90) # speed for sparkline
+        self._accel_burst: int = 0                   # frames to show accel burst
+        self._fps_cache: float = 30.                 # cached from process_video
+
     # ── PROCESS VIDEO ─────────────────────────────────────────────────────────
 
     def process_video(self):
@@ -903,6 +909,7 @@ class SportsAnalyzer:
         if not cap.isOpened(): raise FileNotFoundError(self.video_path)
 
         fps   = self.fps_override or cap.get(cv2.CAP_PROP_FPS) or 30.
+        self._fps_cache = fps
         W     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         H     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -933,7 +940,17 @@ class SportsAnalyzer:
 
                 fm = self._metrics(pf, idx, ts, fps)
                 self.frame_metrics.append(fm)
+                # Feed wow-factor state
+                self._trail.append((int(kp.hip_center[0]), int(kp.hip_center[1])))
+                self._speed_history.append(fm.speed)
+                if abs(fm.acceleration) > 4.0:
+                    self._accel_burst = 8   # hold burst effect for 8 frames
+                elif self._accel_burst > 0:
+                    self._accel_burst -= 1
+
+                frame = self._draw_trail(frame)
                 frame = self._annotate(frame, pf, fm, W, H)
+                frame = self._draw_player_aura(frame, kp, fm)
 
             frame = self._hud(frame, idx, ts, total, visible)
             out.write(frame)
@@ -1076,121 +1093,352 @@ class SportsAnalyzer:
             acc_r=min(1.,abs(fm.acceleration)/12)
             fm.injury_risk=fm.joint_stress*0.5+acc_r*0.3+fm.fatigue_index*0.2
 
+    # ── MOTION TRAIL ─────────────────────────────────────────────────────────
+
+    def _draw_trail(self, frame):
+        """Fading colour trail of the player's path."""
+        pts = list(self._trail)
+        if len(pts) < 2:
+            return frame
+        ov = frame.copy()
+        for i in range(1, len(pts)):
+            t     = i / len(pts)                       # 0=old, 1=newest
+            alpha = t * 0.55
+            col   = lerp_color((40,40,120), (0,220,255), t)
+            thick = max(1, int(t * 4))
+            cv2.line(ov, pts[i-1], pts[i], col, thick, cv2.LINE_AA)
+        # Dot at oldest visible point
+        cv2.circle(ov, pts[0], 3, (80,80,180), -1, cv2.LINE_AA)
+        frame[:] = cv2.addWeighted(ov, 0.55, frame, 0.45, 0)
+        return frame
+
+    # ── PLAYER AURA ───────────────────────────────────────────────────────────
+
+    def _draw_player_aura(self, frame, kp, fm):
+        """Speed-reactive glow ellipse around the player silhouette."""
+        if fm.speed < 0.5:
+            return frame
+        hx, hy = int(kp.hip_center[0]), int(kp.hip_center[1])
+        bx, by, bw, bh = self.pose_frames[-1].bbox
+        rx = max(12, bw // 2 + 6)
+        ry = max(20, bh // 2 + 10)
+        intensity = clamp01(fm.speed / 8.)
+        col = lerp_color((0,180,60), (0,60,255), intensity)
+
+        # Accel burst: extra shockwave ring
+        if self._accel_burst > 0:
+            burst_r = int(rx * 1.6 + self._accel_burst * 3)
+            burst_alpha = self._accel_burst / 8. * 0.4
+            ov = frame.copy()
+            cv2.ellipse(ov, (hx, hy), (burst_r, int(burst_r*1.4)),
+                        0, 0, 360, (0,200,255), 3, cv2.LINE_AA)
+            frame[:] = cv2.addWeighted(ov, burst_alpha, frame, 1-burst_alpha, 0)
+
+        # Soft glow halo (2 layers)
+        for expansion, a in [(14, 0.12), (6, 0.20)]:
+            ov = frame.copy()
+            cv2.ellipse(ov, (hx, hy), (rx+expansion, ry+expansion),
+                        0, 0, 360, col, -1, cv2.LINE_AA)
+            frame[:] = cv2.addWeighted(ov, a, frame, 1-a, 0)
+        return frame
+
     # ── ANNOTATION ────────────────────────────────────────────────────────────
 
     def _annotate(self, frame, pf, fm, W, H):
         kp  = pf.kp
-        rt  = clamp01(fm.risk_score / 100.)   # 0-1 tint
+        rt  = clamp01(fm.risk_score / 100.)
 
         # Gradient skeleton with risk colouring
         render_skeleton(frame, kp, risk_tint=rt)
 
-        hx,hy = int(kp.hip_center[0]), int(kp.hip_center[1])
+        hx, hy = int(kp.hip_center[0]), int(kp.hip_center[1])
 
-        # Player ID badge — floating above head
-        head_y = int(kp.head[1]) - 22
-        cv2.rectangle(frame,(hx-45,head_y-18),(hx+55,head_y+4),(0,0,0),-1)
-        cv2.putText(frame,f"#{self.player_id}",(hx-10,head_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,0.6,(255,220,0),2,cv2.LINE_AA)
+        # ── Player ID badge (pill shape above head) ───────────────────────────
+        head_y = int(kp.head[1]) - 28
+        badge_txt = f"  #{self.player_id}  "
+        (tw, th), _ = cv2.getTextSize(badge_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.62, 2)
+        bx0 = hx - tw//2 - 4
+        cv2.rectangle(frame, (bx0, head_y-20), (bx0+tw+8, head_y+4), (255,220,0), -1)
+        cv2.rectangle(frame, (bx0, head_y-20), (bx0+tw+8, head_y+4), (0,0,0), 1)
+        cv2.putText(frame, badge_txt, (bx0+4, head_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0,0,0), 2, cv2.LINE_AA)
 
-        # Speed arrow from hip centre
-        if fm.speed>0.3 and len(self.pose_frames)>=2:
-            prev=self.pose_frames[-2]
-            dx=kp.hip_center[0]-prev.kp.hip_center[0]
-            dy=kp.hip_center[1]-prev.kp.hip_center[1]
-            mag=math.hypot(dx,dy)+1e-6
-            ar=int(min(fm.speed*12,80))
-            ex,ey=int(hx+dx/mag*ar),int(hy+dy/mag*ar)
-            sc2=risk_color(fm.speed/10.*100)
-            cv2.arrowedLine(frame,(hx,hy),(ex,ey),sc2,2,cv2.LINE_AA,tipLength=0.35)
-            cv2.putText(frame,f"{fm.speed:.1f} m/s",(hx+14,hy-8),
-                        cv2.FONT_HERSHEY_SIMPLEX,0.52,sc2,2,cv2.LINE_AA)
+        # ── Speed vector arrow ────────────────────────────────────────────────
+        if fm.speed > 0.3 and len(self.pose_frames) >= 2:
+            prev = self.pose_frames[-2]
+            dx = kp.hip_center[0] - prev.kp.hip_center[0]
+            dy = kp.hip_center[1] - prev.kp.hip_center[1]
+            mag = math.hypot(dx, dy) + 1e-6
+            ar  = int(min(fm.speed * 14, 90))
+            ex, ey = int(hx + dx/mag*ar), int(hy + dy/mag*ar)
+            sc2 = risk_color(fm.speed / 10. * 100)
+            # Thick glow arrow
+            cv2.arrowedLine(frame, (hx,hy), (ex,ey), sc2, 4, cv2.LINE_AA, tipLength=0.32)
+            cv2.arrowedLine(frame, (hx,hy), (ex,ey), (255,255,255), 1, cv2.LINE_AA, tipLength=0.32)
+            # Speed label with background pill
+            spd_txt = f"{fm.speed:.1f} m/s"
+            (stw, sth), _ = cv2.getTextSize(spd_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 2)
+            sx, sy = ex+6, ey-4
+            cv2.rectangle(frame, (sx-2, sy-sth-2), (sx+stw+4, sy+4), (0,0,0), -1)
+            cv2.putText(frame, spd_txt, (sx, sy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, sc2, 2, cv2.LINE_AA)
 
-        # Knee angle arcs  ─ drawn as small arc at the joint
-        for side, kpt, ang in [
-            ("L", kp.left_knee,  fm.left_knee_angle),
-            ("R", kp.right_knee, fm.right_knee_angle),
+        # ── Joint stress rings on knees ────────────────────────────────────────
+        for kpt, ang, stress in [
+            (kp.left_knee,  fm.left_knee_angle,  fm.joint_stress),
+            (kp.right_knee, fm.right_knee_angle, fm.joint_stress),
         ]:
-            kx,ky=int(kpt[0]),int(kpt[1])
-            ac=(0,220,0) if ang>145 else (0,140,255) if ang>120 else (0,0,220)
-            cv2.putText(frame,f"{ang:.0f}°",(kx+7,ky-4),
-                        cv2.FONT_HERSHEY_SIMPLEX,0.42,ac,1,cv2.LINE_AA)
+            kx, ky = int(kpt[0]), int(kpt[1])
+            ac = (0,220,0) if ang>145 else (0,140,255) if ang>120 else (0,0,220)
+            # Stress ring — pulses when under load
+            if ang < 130:
+                pulse = int(8 + 3 * math.sin(len(self.pose_frames) * 0.4))
+                ov = frame.copy()
+                cv2.circle(ov, (kx,ky), pulse, (0,0,255), 2, cv2.LINE_AA)
+                frame[:] = cv2.addWeighted(ov, 0.6, frame, 0.4, 0)
+            cv2.putText(frame, f"{ang:.0f}°", (kx+8, ky-5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, ac, 1, cv2.LINE_AA)
 
-        # Direction change flash
+        # ── Direction change flash ────────────────────────────────────────────
         if fm.direction_change:
-            ov=frame.copy(); cv2.rectangle(ov,(0,0),(W,H),(0,0,200),5)
-            frame[:]=cv2.addWeighted(ov,0.5,frame,0.5,0)
-            cv2.putText(frame,"DIRECTION CHANGE",(W//2-140,H-30),
-                        cv2.FONT_HERSHEY_SIMPLEX,0.9,(0,80,255),2,cv2.LINE_AA)
+            ov = frame.copy()
+            cv2.rectangle(ov, (0,0), (W,H), (0,0,180), 6)
+            frame[:] = cv2.addWeighted(ov, 0.55, frame, 0.45, 0)
+            # Centred bold label
+            label = "DIRECTION CHANGE"
+            (lw,_),_ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 1.1, 2)
+            cv2.rectangle(frame, (W//2-lw//2-10, H-52), (W//2+lw//2+10, H-16), (0,0,0), -1)
+            cv2.putText(frame, label, (W//2-lw//2, H-24),
+                        cv2.FONT_HERSHEY_DUPLEX, 1.1, (0,100,255), 2, cv2.LINE_AA)
 
-        # Mini risk gauge — bottom-right corner
-        gx,gy = W-65, H-75
-        draw_risk_gauge(frame, gx, gy, 42, fm.risk_score)
+        # ── Mini risk gauge (arc) ─────────────────────────────────────────────
+        gx, gy = W-70, H-80
+        draw_risk_gauge(frame, gx, gy, 44, fm.risk_score)
 
         return frame
 
     # ── HUD ───────────────────────────────────────────────────────────────────
 
+    def _draw_stat_bar(self, frame, x, y, w, h, value, max_val, col, label, val_fmt):
+        """Horizontal animated stat bar: label | ████░░░ | value"""
+        filled = int(w * clamp01(value / max(max_val, 1e-6)))
+        # Background
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (35,35,35), -1)
+        # Fill with gradient
+        if filled > 0:
+            for px in range(filled):
+                t = px / max(w-1, 1)
+                bc = lerp_color(col, lerp_color(col,(255,255,255),0.4), t)
+                cv2.line(frame, (x+px, y+1), (x+px, y+h-1), bc, 1)
+        # Border
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (60,60,60), 1)
+        # Label left
+        cv2.putText(frame, label, (x-2, y+h-2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, (160,160,160), 1, cv2.LINE_AA)
+        # Value right
+        val_txt = val_fmt.format(value)
+        (vw,_),_ = cv2.getTextSize(val_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+        cv2.putText(frame, val_txt, (x+w+4, y+h-2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, col, 1, cv2.LINE_AA)
+
+    def _draw_sparkline(self, frame, x, y, w, h, values, col=(0,255,200)):
+        """Mini speed graph — last N values drawn as a line chart."""
+        vals = list(values)
+        if len(vals) < 2:
+            return
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (20,20,20), -1)
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (50,50,50), 1)
+        mx = max(max(vals), 0.1)
+        pts = []
+        for i, v in enumerate(vals):
+            px = x + int(i / (len(vals)-1) * w)
+            py = y + h - int(clamp01(v/mx) * (h-2)) - 1
+            pts.append((px, py))
+        for i in range(1, len(pts)):
+            t = i / len(pts)
+            lc = lerp_color((0,120,100), col, t)
+            cv2.line(frame, pts[i-1], pts[i], lc, 2, cv2.LINE_AA)
+        # Current value dot
+        cv2.circle(frame, pts[-1], 3, (255,255,255), -1, cv2.LINE_AA)
+        # Axis label
+        cv2.putText(frame, f"{vals[-1]:.1f}", (x+w+3, y+h),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, col, 1, cv2.LINE_AA)
+
     def _hud(self, frame, idx, ts, total, visible=True):
-        H,W = frame.shape[:2]
+        H, W = frame.shape[:2]
+        fps = self._fps_cache
 
-        # Semi-transparent panel
-        panel_h = 210
+        # ── Left panel (broadcast sidebar) ───────────────────────────────────
+        PW = 230   # panel width
+        PH = H
         ov = frame.copy()
-        cv2.rectangle(ov,(0,0),(305,panel_h),(10,10,10),-1)
-        frame = cv2.addWeighted(ov,0.60,frame,0.40,0)
-        cv2.line(frame,(0,panel_h),(305,panel_h),(255,220,0),1)
+        cv2.rectangle(ov, (0,0), (PW, PH), (8,8,12), -1)
+        frame[:] = cv2.addWeighted(ov, 0.72, frame, 0.28, 0)
 
-        # Tracker state dot
+        # Gold accent line
+        cv2.line(frame, (PW-1, 0), (PW-1, PH), (255,215,0), 2)
+
+        # ── Header ────────────────────────────────────────────────────────────
+        # Logo bar
+        cv2.rectangle(frame, (0,0), (PW, 42), (20,20,28), -1)
+        cv2.line(frame, (0,42), (PW,42), (255,215,0), 1)
+        # Juventus B&W mini badge
+        cv2.rectangle(frame, (6,6), (34,36), (255,255,255), -1)
+        cv2.rectangle(frame, (20,6), (34,36), (0,0,0), -1)
+        cv2.putText(frame, "JUV", (7,30), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0,0,0), 1)
+        cv2.putText(frame, "ANALYTICS", (38,18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255,215,0), 1, cv2.LINE_AA)
+        cv2.putText(frame, "SPORTS SCIENCE", (38,34),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, (160,160,160), 1, cv2.LINE_AA)
+
+        # Tracker state pill
         t_state = self.tracker.state
-        dot_col = {"pending":(0,200,255),"tracking":(0,220,0),"lost":(0,60,255)}.get(t_state,(150,150,150))
-        cv2.circle(frame,(12,12),7,dot_col,-1,cv2.LINE_AA)
-        state_txt = {"pending":"ACQUIRING","tracking":"TRACKING",
-                     "lost":f"SEARCHING {self.tracker._lost_count}f"}.get(t_state,"")
-        cv2.putText(frame,f"JUVENTUS ANALYTICS",(26,16),
-                    cv2.FONT_HERSHEY_SIMPLEX,0.52,(255,220,0),1,cv2.LINE_AA)
+        dot_col = {"pending":(0,200,255),"tracking":(0,220,0),"lost":(0,80,255)}.get(t_state,(150,150,150))
+        state_txt = {"pending":"ACQUIRING","tracking":"LIVE","lost":"SEARCHING"}.get(t_state,"")
+        cv2.circle(frame, (10,54), 5, dot_col, -1, cv2.LINE_AA)
+        cv2.putText(frame, state_txt, (20,59),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, dot_col, 1, cv2.LINE_AA)
+        # Timecode right-aligned
+        tc = f"{int(ts//60):02d}:{ts%60:05.2f}"
+        (tcw,_),_ = cv2.getTextSize(tc, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+        cv2.putText(frame, tc, (PW-tcw-6, 59),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160,160,160), 1, cv2.LINE_AA)
 
-        lines = [
-            (f"  {state_txt}   {ts:.1f}s / {total/max(self.fps_override or 30,1):.0f}s",
-             dot_col),
-        ]
+        # Player badge
+        cv2.rectangle(frame, (0,66), (PW,92), (18,18,26), -1)
+        cv2.putText(frame, f"PLAYER  #{self.player_id}", (8,84),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.52, (255,215,0), 1, cv2.LINE_AA)
+
         if self.frame_metrics:
-            fm=self.frame_metrics[-1]
-            lines += [
-                (f"  Speed      {fm.speed:.2f} m/s",          (0,255,200)),
-                (f"  Cadence    {fm.cadence:.0f} spm",         (0,255,200)),
-                (f"  Stride     {fm.stride_length:.2f} m",     (0,255,200)),
-                (f"  Knee L/R   {fm.left_knee_angle:.0f}°/{fm.right_knee_angle:.0f}°", (0,210,255)),
-                (f"  Valgus L/R {fm.l_valgus:.2f}/{fm.r_valgus:.2f}", (0,200,255)),
-                (f"  Trunk lean {fm.trunk_lean:.1f}°",          (0,200,255)),
-                (f"  Energy     {fm.energy_expenditure:.0f} kcal/hr", (0,180,255)),
-                (f"  Gait sym   {fm.gait_symmetry:.1f}%",      (0,255,180)),
-                (f"  Risk       {fm.risk_score:.0f}/100",       risk_color(fm.risk_score)),
+            fm = self.frame_metrics[-1]
+            rc = risk_color(fm.risk_score)
+
+            # ── Speed section ─────────────────────────────────────────────────
+            y0 = 100
+            cv2.putText(frame, "VELOCITY", (8, y0),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (120,120,120), 1, cv2.LINE_AA)
+            cv2.line(frame, (0, y0+3), (PW, y0+3), (30,30,40), 1)
+
+            # Big speed number
+            spd_txt = f"{fm.speed:.1f}"
+            cv2.putText(frame, spd_txt, (8, y0+38),
+                        cv2.FONT_HERSHEY_DUPLEX, 1.4, (0,255,200), 2, cv2.LINE_AA)
+            cv2.putText(frame, "m/s", (8 + int(len(spd_txt)*22), y0+38),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (80,200,160), 1, cv2.LINE_AA)
+
+            # Sparkline
+            self._draw_sparkline(frame, 8, y0+44, PW-20, 28,
+                                 self._speed_history, (0,255,200))
+            cv2.putText(frame, "3s SPEED HISTORY", (8, y0+84),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, (80,80,80), 1, cv2.LINE_AA)
+
+            # ── Stat bars ─────────────────────────────────────────────────────
+            y1 = y0 + 96
+            BAR_W = 80
+            BAR_H = 7
+            BX    = 68   # bar x start (after label)
+
+            stats = [
+                ("CADENCE",  fm.cadence,           220., (0,200,255),  "{:.0f} spm"),
+                ("STRIDE",   fm.stride_length,      2.5,  (0,255,180),  "{:.2f} m"),
+                ("ENERGY",   fm.energy_expenditure, 900., (0,180,255),  "{:.0f} kc"),
+                ("GAIT SYM", fm.gait_symmetry,      100., (0,255,150),  "{:.0f}%"),
+                ("TRUNK",    fm.trunk_lean,          30.,  (0,200,220),  "{:.1f}°"),
             ]
+            for i, (lbl, val, mx, col, fmt) in enumerate(stats):
+                sy = y1 + i * 22
+                cv2.putText(frame, lbl, (6, sy+BAR_H),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.30, (110,110,110), 1, cv2.LINE_AA)
+                self._draw_stat_bar(frame, BX, sy, BAR_W, BAR_H, val, mx, col, "", fmt)
 
-        for i,(txt,col) in enumerate(lines):
-            cv2.putText(frame,txt,(6,36+i*18),
-                        cv2.FONT_HERSHEY_SIMPLEX,0.42,col,1,cv2.LINE_AA)
+            # ── Knee angles ───────────────────────────────────────────────────
+            y2 = y1 + len(stats)*22 + 8
+            cv2.putText(frame, "JOINT ANGLES", (8, y2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (120,120,120), 1, cv2.LINE_AA)
+            cv2.line(frame, (0, y2+3), (PW, y2+3), (30,30,40), 1)
 
-        # Out-of-frame banner
-        if not visible and t_state=="lost":
-            bov=frame.copy()
-            cv2.rectangle(bov,(0,H//2-30),(W,H//2+30),(0,0,0),-1)
-            frame=cv2.addWeighted(bov,0.65,frame,0.35,0)
-            cv2.putText(frame,f"PLAYER #{self.player_id}  OUT OF FRAME — WAITING",
-                        (W//2-210,H//2+8),cv2.FONT_HERSHEY_SIMPLEX,0.72,(0,140,255),2,cv2.LINE_AA)
+            for ki, (side, ang, col) in enumerate([
+                ("L KNEE", fm.left_knee_angle,  (255,180,0)),
+                ("R KNEE", fm.right_knee_angle, (0,140,255)),
+            ]):
+                sy = y2 + 14 + ki*20
+                arc_col = (0,220,0) if ang>145 else (0,140,255) if ang>120 else (0,0,220)
+                cv2.putText(frame, side, (6, sy+10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, (110,110,110), 1, cv2.LINE_AA)
+                self._draw_stat_bar(frame, BX, sy, BAR_W, BAR_H, ang, 180., arc_col, "", "{:.0f}°")
 
-        # Juventus B&W badge
-        bx,by=W-58,5
-        cv2.rectangle(frame,(bx,by),(bx+52,by+32),(255,255,255),-1)
-        cv2.rectangle(frame,(bx+26,by),(bx+52,by+32),(0,0,0),-1)
-        cv2.putText(frame,"JUV",(bx+4,by+23),cv2.FONT_HERSHEY_SIMPLEX,0.58,(0,0,0),2)
+            # ── Valgus ────────────────────────────────────────────────────────
+            y3 = y2 + 14 + 2*20 + 6
+            cv2.putText(frame, "VALGUS", (8, y3),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (120,120,120), 1, cv2.LINE_AA)
+            cv2.line(frame, (0, y3+3), (PW, y3+3), (30,30,40), 1)
+            for ki, (side, val) in enumerate([("L", fm.l_valgus), ("R", fm.r_valgus)]):
+                sy = y3 + 14 + ki*20
+                vc = (0,220,0) if val<0.1 else (0,140,255) if val<0.2 else (0,0,220)
+                cv2.putText(frame, side, (6, sy+10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, (110,110,110), 1, cv2.LINE_AA)
+                self._draw_stat_bar(frame, BX, sy, BAR_W, BAR_H, val, 0.4, vc, "", "{:.2f}")
 
-        # Risk bar along bottom
-        rc = risk_color(self.frame_metrics[-1].risk_score) if self.frame_metrics else (0,200,0)
-        bar_w = int(W * clamp01((self.frame_metrics[-1].risk_score if self.frame_metrics else 0)/100.))
-        cv2.rectangle(frame,(0,H-14),(W,H),(20,20,20),-1)
-        if bar_w>0: cv2.rectangle(frame,(0,H-14),(bar_w,H),rc,-1)
+            # ── Risk section ──────────────────────────────────────────────────
+            y4 = y3 + 14 + 2*20 + 8
+            cv2.putText(frame, "INJURY RISK", (8, y4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (120,120,120), 1, cv2.LINE_AA)
+            cv2.line(frame, (0, y4+3), (PW, y4+3), (30,30,40), 1)
+
+            # Big risk score
+            risk_txt = f"{fm.risk_score:.0f}"
+            cv2.putText(frame, risk_txt, (8, y4+38),
+                        cv2.FONT_HERSHEY_DUPLEX, 1.4, rc, 2, cv2.LINE_AA)
+            cv2.putText(frame, "/ 100", (8+int(len(risk_txt)*22), y4+38),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (80,80,80), 1, cv2.LINE_AA)
+
+            # Risk label pill
+            risk_lbl = self._risk_label(fm.injury_risk)
+            lbl_col  = (0,200,0) if risk_lbl=="Low" else (0,140,255) if risk_lbl=="Moderate" else (0,0,220)
+            (rlw,_),_ = cv2.getTextSize(risk_lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+            rx0 = 8; ry0 = y4+44
+            cv2.rectangle(frame, (rx0, ry0), (rx0+rlw+10, ry0+18), lbl_col, -1)
+            cv2.putText(frame, risk_lbl, (rx0+5, ry0+13),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0,0,0), 1, cv2.LINE_AA)
+
+            # Sub-risk bars
+            for ki, (lbl, val, mx, col) in enumerate([
+                ("FALL",    fm.fall_risk,    1., (0,200,255)),
+                ("JOINT",   fm.joint_stress, 1., (0,140,255)),
+                ("FATIGUE", fm.fatigue_index,1., (0,100,220)),
+            ]):
+                sy = y4 + 68 + ki*20
+                cv2.putText(frame, lbl, (6, sy+8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.28, (100,100,100), 1, cv2.LINE_AA)
+                self._draw_stat_bar(frame, BX, sy, BAR_W, 6, val, mx,
+                                    risk_color(val*100), "", "{:.2f}")
+
+        # ── Progress bar at very bottom of panel ──────────────────────────────
+        prog = clamp01(ts / max(total/fps, 1e-6))
+        pbar_y = H - 18
+        cv2.rectangle(frame, (0, pbar_y), (PW, H), (15,15,20), -1)
+        if prog > 0:
+            cv2.rectangle(frame, (0, pbar_y+2), (int(PW*prog), H-2), (255,215,0), -1)
+        cv2.putText(frame, f"{prog*100:.0f}%", (PW//2-10, H-4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0,0,0) if prog>0.3 else (120,120,120),
+                    1, cv2.LINE_AA)
+
+        # ── Risk bar along bottom of whole frame ──────────────────────────────
+        if self.frame_metrics:
+            rc2 = risk_color(self.frame_metrics[-1].risk_score)
+            bw  = int((W-PW) * clamp01(self.frame_metrics[-1].risk_score/100.))
+            cv2.rectangle(frame, (PW, H-8), (W, H), (20,20,20), -1)
+            if bw > 0:
+                cv2.rectangle(frame, (PW, H-8), (PW+bw, H), rc2, -1)
+
+        # ── Out-of-frame banner ───────────────────────────────────────────────
+        if not visible and t_state == "lost":
+            bov = frame.copy()
+            cv2.rectangle(bov, (PW, H//2-35), (W, H//2+35), (0,0,0), -1)
+            frame[:] = cv2.addWeighted(bov, 0.70, frame, 0.30, 0)
+            cv2.putText(frame, f"PLAYER #{self.player_id} — OUT OF FRAME",
+                        (PW + 20, H//2+8),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.75, (0,140,255), 2, cv2.LINE_AA)
 
         return frame
 

@@ -70,6 +70,7 @@ desktop.ini
 input/
 Input/
 *.mp4
+!Output/output_annotated.mp4
 *.avi
 *.mov
 *.mkv
@@ -82,8 +83,11 @@ Input/
 *.avi
 
 # Generated Metrics (Regeneratable data)
-metrics.json
-metrics.csv
+# metrics.json
+# metrics.csv
+# !Output/metrics.json
+# !Output/report.txt
+# !Output/bio.csv
 
 # Logs
 logs/

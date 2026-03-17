@@ -18,11 +18,19 @@ from dataclasses import dataclass, asdict
 from typing import Optional, List, Tuple
 
 try:
-    from scipy.signal import find_peaks
+    from scipy.signal import find_peaks, butter, filtfilt
     from scipy.ndimage import uniform_filter1d
     HAS_SCIPY = True
 except ImportError:
     HAS_SCIPY = False
+
+# ── Optional Sports2D / Pyomeca / SKDH — graceful fallback built-in ──────────
+try:
+    import sports2d as _s2d          # pip install sports2d pose2sim
+    HAS_SPORTS2D = True
+    print("[BIO] sports2d found — using Sports2D angle engine.")
+except ImportError:
+    HAS_SPORTS2D = False
 
 try:
     from ultralytics import YOLO as _YOLO
@@ -718,22 +726,271 @@ def draw_risk_gauge(frame,cx,cy,radius,s,label="RISK"):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  CORE ANALYZER
+#  BIOMECHANICS ENGINE  (Sports2D-style joint angles + Butterworth smoothing)
 # ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class BioFrame:
+    """Extended per-frame biomechanics from Sports2D-style analysis."""
+    frame_idx: int = 0; timestamp: float = 0.
+    left_knee_flexion: float = 0.;   right_knee_flexion: float = 0.
+    left_hip_flexion: float = 0.;    right_hip_flexion: float = 0.
+    left_ankle_dorsiflexion: float = 0.; right_ankle_dorsiflexion: float = 0.
+    left_elbow_flexion: float = 0.;  right_elbow_flexion: float = 0.
+    trunk_lateral_lean: float = 0.;  trunk_sagittal_lean: float = 0.
+    pelvis_obliquity: float = 0.;    pelvis_rotation: float = 0.
+    left_thigh_angle: float = 0.;    right_thigh_angle: float = 0.
+    left_shank_angle: float = 0.;    right_shank_angle: float = 0.
+    trunk_segment_angle: float = 0.
+    left_valgus_clinical: float = 0.; right_valgus_clinical: float = 0.
+    left_arm_swing: float = 0.;      right_arm_swing: float = 0.
+    arm_swing_asymmetry: float = 0.
+    left_knee_ang_vel: float = 0.;   right_knee_ang_vel: float = 0.
+    left_hip_ang_vel: float = 0.;    right_hip_ang_vel: float = 0.
+    left_heel_strike: bool = False;  right_heel_strike: bool = False
+    left_toe_off: bool = False;      right_toe_off: bool = False
+    stance_left: bool = False;       stance_right: bool = False
+    double_support: bool = False
+    step_width: float = 0.;          foot_progression_angle: float = 0.
+
+
+class BiomechanicsEngine:
+    """
+    Sports2D-convention joint angles, Butterworth LP smoothing,
+    SKDH-style heel-strike / toe-off detection.
+    Works in pure numpy; upgrades automatically when scipy / sports2d available.
+    """
+    FILTER_HZ = 6.0   # Sports2D default low-pass cutoff
+
+    def __init__(self, fps: float = 25.0, pix_to_m: float = 0.002):
+        self.fps = fps; self.pix_to_m = pix_to_m
+        self.frames: List[BioFrame] = []
+        self._ah: dict = {}          # angle history for angular velocity
+        self._la_y: List[float] = []; self._ra_y: List[float] = []
+        self._lf_x: List[float] = []; self._rf_x: List[float] = []
+        self.lhs: List[int] = []; self.rhs: List[int] = []
+        self.lto: List[int] = []; self.rto: List[int] = []
+        backend = "sports2d" if HAS_SPORTS2D else "scipy" if HAS_SCIPY else "numpy"
+        print(f"[BIO] BiomechanicsEngine — backend={backend}, fps={fps:.1f}")
+
+    # ── per-frame ─────────────────────────────────────────────────────────────
+    def process_frame(self, fi: int, ts: float, kp: PoseKeypoints) -> BioFrame:
+        bf = BioFrame(frame_idx=fi, timestamp=ts)
+
+        # Joint angles (Sports2D convention: angle at vertex between two segments)
+        bf.left_knee_flexion   = angle_3pts(kp.left_hip,  kp.left_knee,  kp.left_ankle)
+        bf.right_knee_flexion  = angle_3pts(kp.right_hip, kp.right_knee, kp.right_ankle)
+        bf.left_hip_flexion    = angle_3pts(kp.shoulder_center, kp.left_hip,  kp.left_knee)
+        bf.right_hip_flexion   = angle_3pts(kp.shoulder_center, kp.right_hip, kp.right_knee)
+        bf.left_ankle_dorsiflexion  = angle_3pts(kp.left_knee,  kp.left_ankle,  kp.left_foot)
+        bf.right_ankle_dorsiflexion = angle_3pts(kp.right_knee, kp.right_ankle, kp.right_foot)
+        bf.left_elbow_flexion  = angle_3pts(kp.left_shoulder,  kp.left_elbow,  kp.left_wrist)
+        bf.right_elbow_flexion = angle_3pts(kp.right_shoulder, kp.right_elbow, kp.right_wrist)
+
+        # Segment angles to vertical (Sports2D style, degrees)
+        bf.left_thigh_angle  = self._seg_to_vert(kp.left_hip,  kp.left_knee)
+        bf.right_thigh_angle = self._seg_to_vert(kp.right_hip, kp.right_knee)
+        bf.left_shank_angle  = self._seg_to_vert(kp.left_knee,  kp.left_ankle)
+        bf.right_shank_angle = self._seg_to_vert(kp.right_knee, kp.right_ankle)
+        bf.trunk_segment_angle = self._seg_to_vert(kp.hip_center, kp.shoulder_center)
+
+        # Trunk lean
+        dx = kp.shoulder_center[0]-kp.hip_center[0]; dy = kp.shoulder_center[1]-kp.hip_center[1]
+        bf.trunk_lateral_lean  = math.degrees(math.atan2(dx,  abs(dy)+1e-9))
+        bf.trunk_sagittal_lean = math.degrees(math.atan2(abs(dx), abs(dy)+1e-9))
+
+        # Pelvis
+        hd = kp.left_hip[1]-kp.right_hip[1]; hw = dist2d(kp.left_hip,kp.right_hip)+1e-9
+        bf.pelvis_obliquity = math.degrees(math.atan2(abs(hd), hw))
+        bf.pelvis_rotation  = abs(hd)/hw*100.
+
+        # Clinical valgus (signed: +ve=valgus, -ve=varus)
+        bf.left_valgus_clinical  = self._clinical_valgus(kp.left_hip,  kp.left_knee,  kp.left_ankle)
+        bf.right_valgus_clinical = self._clinical_valgus(kp.right_hip, kp.right_knee, kp.right_ankle)
+
+        # Arm swing excursion
+        bf.left_arm_swing  = abs(self._seg_to_vert(kp.left_shoulder,  kp.left_elbow))
+        bf.right_arm_swing = abs(self._seg_to_vert(kp.right_shoulder, kp.right_elbow))
+        bf.arm_swing_asymmetry = abs(bf.left_arm_swing - bf.right_arm_swing)
+
+        # Angular velocities (deg/s)
+        bf.left_knee_ang_vel  = self._angvel("lk", bf.left_knee_flexion)
+        bf.right_knee_ang_vel = self._angvel("rk", bf.right_knee_flexion)
+        bf.left_hip_ang_vel   = self._angvel("lh", bf.left_hip_flexion)
+        bf.right_hip_ang_vel  = self._angvel("rh", bf.right_hip_flexion)
+
+        # Step width
+        bf.step_width = abs(kp.left_foot[0]-kp.right_foot[0]) * self.pix_to_m
+
+        # Foot progression
+        la = math.degrees(math.atan2(kp.left_foot[0]-kp.left_ankle[0],  abs(kp.left_foot[1]-kp.left_ankle[1])+1e-9))
+        ra = math.degrees(math.atan2(kp.right_foot[0]-kp.right_ankle[0], abs(kp.right_foot[1]-kp.right_ankle[1])+1e-9))
+        bf.foot_progression_angle = (abs(la)+abs(ra))/2.
+
+        self._la_y.append(kp.left_ankle[1]); self._ra_y.append(kp.right_ankle[1])
+        self._lf_x.append(kp.left_foot[0]);  self._rf_x.append(kp.right_foot[0])
+        self.frames.append(bf)
+        return bf
+
+    # ── post-processing ───────────────────────────────────────────────────────
+    def post_process(self):
+        if len(self.frames) < 8: return
+        # Smooth all continuous angle fields
+        for field in ["left_knee_flexion","right_knee_flexion","left_hip_flexion",
+                      "right_hip_flexion","left_ankle_dorsiflexion","right_ankle_dorsiflexion",
+                      "trunk_lateral_lean","trunk_sagittal_lean",
+                      "left_valgus_clinical","right_valgus_clinical"]:
+            raw = np.array([getattr(f, field) for f in self.frames], dtype=float)
+            sm  = self._smooth(raw)
+            for i, bf in enumerate(self.frames):
+                object.__setattr__(bf, field, float(sm[i]))
+
+        # Gait event detection from ankle Y trajectory
+        md = max(4, int(self.fps * 0.18))
+        la = np.array(self._la_y); ra = np.array(self._ra_y)
+        self.lhs = self._peaks(la, md); self.rhs = self._peaks(ra, md)
+        self.lto = self._peaks(-la, md); self.rto = self._peaks(-ra, md)
+
+        lhs_s=set(self.lhs); rhs_s=set(self.rhs)
+        lto_s=set(self.lto); rto_s=set(self.rto)
+        sl = self._stance_mask(self.lhs, self.lto, len(self.frames))
+        sr = self._stance_mask(self.rhs, self.rto, len(self.frames))
+
+        lf_x=np.array(self._lf_x); rf_x=np.array(self._rf_x)
+        for i, bf in enumerate(self.frames):
+            bf.left_heel_strike  = i in lhs_s; bf.right_heel_strike = i in rhs_s
+            bf.left_toe_off  = i in lto_s;     bf.right_toe_off = i in rto_s
+            bf.stance_left = sl[i]; bf.stance_right = sr[i]
+            bf.double_support = sl[i] and sr[i]
+            if bf.left_heel_strike or bf.right_heel_strike:
+                bf.step_width = abs(lf_x[i]-rf_x[i])*self.pix_to_m
+        print(f"[BIO] Post-process: LHS={len(self.lhs)} RHS={len(self.rhs)}")
+
+    def summary_dict(self) -> dict:
+        if not self.frames: return {}
+        skip = {"frame_idx","timestamp","left_heel_strike","right_heel_strike",
+                "left_toe_off","right_toe_off","stance_left","stance_right","double_support"}
+        out = {}
+        for f in BioFrame.__dataclass_fields__:
+            if f in skip: continue
+            v = np.array([getattr(x, f) for x in self.frames], dtype=float)
+            out[f"{f}_mean"]=float(np.mean(v)); out[f"{f}_max"]=float(np.max(v)); out[f"{f}_std"]=float(np.std(v))
+        out["lhs_count"]=len(self.lhs); out["rhs_count"]=len(self.rhs)
+        out["double_support_pct"]=100.*sum(1 for x in self.frames if x.double_support)/max(len(self.frames),1)
+        out["valgus_asymmetry"]=abs(out.get("left_valgus_clinical_mean",0)-out.get("right_valgus_clinical_mean",0))
+        return out
+
+    def get_dataframe(self):
+        from dataclasses import asdict as _ad
+        return pd.DataFrame([_ad(f) for f in self.frames])
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+    @staticmethod
+    def _seg_to_vert(p, d) -> float:
+        dx=d[0]-p[0]; dy=d[1]-p[1]
+        return float(math.degrees(math.atan2(dx, abs(dy)+1e-9)))
+
+    @staticmethod
+    def _clinical_valgus(hip, knee, ankle) -> float:
+        ha=np.array([ankle[0]-hip[0], ankle[1]-hip[1]], dtype=float)
+        hk=np.array([knee[0]-hip[0],  knee[1]-hip[1]],  dtype=float)
+        dev=float(np.cross(ha, hk))/(np.linalg.norm(ha)+1e-9)
+        return float(math.degrees(math.atan2(dev, np.linalg.norm(hk)+1e-9)))
+
+    def _angvel(self, key: str, ang: float) -> float:
+        prev=self._ah.get(key, ang); self._ah[key]=ang
+        return (ang-prev)*self.fps
+
+    def _smooth(self, arr: np.ndarray) -> np.ndarray:
+        if HAS_SCIPY:
+            try:
+                nyq=self.fps/2.; b,a=butter(4, min(self.FILTER_HZ,nyq*.9)/nyq, btype="low")
+                return filtfilt(b, a, arr)
+            except Exception: pass
+        w=max(3, int(self.fps*0.12))
+        return smooth_arr(arr, w=w)
+
+    def _peaks(self, sig: np.ndarray, md: int) -> List[int]:
+        if HAS_SCIPY:
+            try: pk,_=find_peaks(sig, distance=md, prominence=2.); return [int(p) for p in pk]
+            except Exception: pass
+        pks=[]
+        for i in range(1, len(sig)-1):
+            if sig[i]>=sig[i-1] and sig[i]>=sig[i+1]:
+                if not pks or i-pks[-1]>=md: pks.append(i)
+        return pks
+
+    @staticmethod
+    def _stance_mask(hs: List[int], to: List[int], n: int) -> List[bool]:
+        m=[False]*n
+        for h in hs:
+            nxt=[t for t in to if t>h]
+            end=min(nxt) if nxt else min(h+20, n-1)
+            for i in range(h, min(end+1, n)): m[i]=True
+        return m
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SKELETON-ONLY CANVAS RENDERER  (for separate skeleton video)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def render_skeleton_canvas(W: int, H: int, kp: PoseKeypoints,
+                           fm: "FrameMetrics", player_id: int,
+                           ts: float) -> np.ndarray:
+    """
+    Draw the skeleton on a pure black canvas — no video background.
+    Used for the separate skeleton-only output video.
+    """
+    canvas = np.zeros((H, W, 3), dtype=np.uint8)
+
+    rt = clamp01(fm.risk_score / 100.)
+    render_skeleton(canvas, kp, risk_tint=rt)
+
+    # Knee angle labels
+    for kpt, ang in [(kp.left_knee, fm.left_knee_angle),
+                     (kp.right_knee, fm.right_knee_angle)]:
+        kx, ky = int(kpt[0]), int(kpt[1])
+        ac = (0,220,0) if ang>145 else (0,140,255) if ang>120 else (0,0,220)
+        cv2.putText(canvas, f"{ang:.0f}°", (kx+8,ky-5),
+                    cv2.FONT_HERSHEY_SIMPLEX, .55, ac, 1, cv2.LINE_AA)
+
+    # Player badge
+    hx, hy = int(kp.hip_center[0]), int(kp.hip_center[1])
+    head_y = int(kp.head[1]) - 32
+    badge = f"  #{player_id}  "
+    (tw,_),_ = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, .70, 2)
+    bx0 = hx - tw//2 - 4
+    cv2.rectangle(canvas, (bx0, head_y-24), (bx0+tw+8, head_y+6), (255,220,0), -1)
+    cv2.putText(canvas, badge, (bx0+4, head_y+2),
+                cv2.FONT_HERSHEY_SIMPLEX, .70, (0,0,0), 2, cv2.LINE_AA)
+
+    # Timecode bottom-right
+    tc = f"{int(ts//60):02d}:{ts%60:05.2f}"
+    (tcw,_),_ = cv2.getTextSize(tc, cv2.FONT_HERSHEY_SIMPLEX, .5, 1)
+    cv2.putText(canvas, tc, (W-tcw-10, H-10),
+                cv2.FONT_HERSHEY_SIMPLEX, .5, (120,120,120), 1, cv2.LINE_AA)
+
+    # Risk gauge bottom-left
+    draw_risk_gauge(canvas, 50, H-60, 38, fm.risk_score)
+
+    return canvas
 
 class SportsAnalyzer:
     PIX_TO_M=None
 
     def __init__(self,video_path,output_video_path="output_annotated.mp4",
-                 player_id=1,fps_override=None,pick=False,yolo_size="m"):
+                 player_id=1,fps_override=None,pick=False,yolo_size="m",
+                 skeleton_video_path=None):
         self.video_path=video_path; self.output_video_path=output_video_path
+        self.skeleton_video_path=skeleton_video_path
         self.player_id=player_id; self.fps_override=fps_override
         self.pose_est=HybridPoseEstimator(); self.smoother=PoseKalmanSmoother()
         self.pose_frames:List[PoseFrame]=[]; self.frame_metrics:List[FrameMetrics]=[]
         self.summary=PlayerSummary(player_id=player_id)
         self._spd_win=deque(maxlen=30); self._risk_win=deque(maxlen=15)
-        self._trail=deque(maxlen=60); self._speed_history=deque(maxlen=90)
+        self._speed_history=deque(maxlen=90)
         self._accel_burst=0; self._fps_cache=30.
+        self.bio_engine:Optional[BiomechanicsEngine]=None
         _get_detection_layer(yolo_size)
         if pick:
             print("[INFO] Interactive selection …"); primary=pick_player_interactive(video_path)
@@ -749,7 +1006,17 @@ class SportsAnalyzer:
         self._fps_cache=fps
         W=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); H=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total=int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        out=cv2.VideoWriter(self.output_video_path,cv2.VideoWriter_fourcc(*"mp4v"),fps,(W,H))
+        out=cv2.VideoWriter(self.output_video_path,cv2.VideoWriter_fourcc(*"avc1"),fps,(W,H))
+
+        # Skeleton-only video writer (black background, skeleton + metrics)
+        skel_out=None
+        if self.skeleton_video_path:
+            skel_out=cv2.VideoWriter(self.skeleton_video_path,cv2.VideoWriter_fourcc(*"avc1"),fps,(W,H))
+            print(f"[INFO] Skeleton video → {self.skeleton_video_path}")
+
+        # BiomechanicsEngine — init after fps is known
+        self.bio_engine=BiomechanicsEngine(fps=fps, pix_to_m=self.PIX_TO_M or 0.002)
+
         print(f"[INFO] {total} frames @ {fps:.1f} fps  ({W}×{H})")
         idx=0
         while True:
@@ -758,17 +1025,75 @@ class SportsAnalyzer:
             ts=idx/fps; bbox=self.lock.update(frame)
             visible=False
             if bbox and bbox[2]>20 and bbox[3]>40:
-                visible=True; target=next((t for t in self.lock.bt.active_tracks if t.id==self.lock._target_id),None)
-                yolo_kp=getattr(target,'_yolo_kp',None) if target else None; spd=self.frame_metrics[-1].speed if self.frame_metrics else 0.
-                raw_kp=self.pose_est.estimate(frame,bbox,ts,spd,yolo_kp=yolo_kp); kp=self.smoother.smooth(raw_kp); pf=PoseFrame(idx,ts,bbox,kp); self.pose_frames.append(pf)
-                if self.PIX_TO_M is None: self._calibrate(kp)
-                fm=self._metrics(pf,idx,ts,fps); self.frame_metrics.append(fm); self._trail.append((int(kp.hip_center[0]),int(kp.hip_center[1]))); self._speed_history.append(fm.speed)
+                visible=True
+                target=next((t for t in self.lock.bt.active_tracks if t.id==self.lock._target_id),None)
+                yolo_kp=getattr(target,'_yolo_kp',None) if target else None
+                spd=self.frame_metrics[-1].speed if self.frame_metrics else 0.
+                raw_kp=self.pose_est.estimate(frame,bbox,ts,spd,yolo_kp=yolo_kp)
+                kp=self.smoother.smooth(raw_kp); pf=PoseFrame(idx,ts,bbox,kp)
+                self.pose_frames.append(pf)
+                if self.PIX_TO_M is None:
+                    self._calibrate(kp)
+                    self.bio_engine.pix_to_m=self.PIX_TO_M or 0.002
+                fm=self._metrics(pf,idx,ts,fps); self.frame_metrics.append(fm)
+                self._speed_history.append(fm.speed)
+                # BiomechanicsEngine per-frame
+                self.bio_engine.process_frame(idx, ts, kp)
                 if abs(fm.acceleration)>4.0: self._accel_burst=8
                 elif self._accel_burst>0: self._accel_burst-=1
-                frame=self._draw_trail(frame); frame=self._annotate(frame,pf,fm,W,H); frame=self._draw_player_aura(frame,kp,fm)
+                # Annotated video (no trail)
+                frame=self._annotate(frame,pf,fm,W,H)
+                frame=self._draw_player_aura(frame,kp,fm)
+                # Skeleton-only frame
+                if skel_out is not None:
+                    skel_frame=render_skeleton_canvas(W,H,kp,fm,self.player_id,ts)
+                    skel_out.write(skel_frame)
+            else:
+                if skel_out is not None:
+                    skel_out.write(np.zeros((H,W,3),dtype=np.uint8))
             frame=self._hud(frame,idx,ts,total,visible); out.write(frame); idx+=1
-        cap.release(); out.release(); tr=len(self.pose_frames); print(f"[INFO] Tracked {tr}/{idx} frames ({100*tr/max(idx,1):.1f}%)")
+
+        cap.release(); out.release()
+        if skel_out is not None: skel_out.release()
+        tr=len(self.pose_frames); print(f"[INFO] Tracked {tr}/{idx} frames ({100*tr/max(idx,1):.1f}%)")
+        if self.bio_engine: self.bio_engine.post_process()
         self._post_gait(fps); self._build_summary(); print("[INFO] Done."); return self.summary
+
+    def _annotate(self, frame, pf, fm, W, H):
+        """Draw player-specific skeleton and labels on the main frame."""
+        kp = pf.kp
+        rt = clamp01(fm.risk_score / 100.)
+        
+        # 1. Render Skeleton
+        render_skeleton(frame, kp, risk_tint=rt)
+        
+        # 2. Knee Angle Labels
+        for kpt, ang in [(kp.left_knee, fm.left_knee_angle),
+                         (kp.right_knee, fm.right_knee_angle)]:
+            kx, ky = int(kpt[0]), int(kpt[1])
+            # Color based on angle (Green > 145, Orange > 120, Red < 120)
+            ac = (0, 220, 0) if ang > 145 else (0, 140, 255) if ang > 120 else (0, 0, 220)
+            cv2.putText(frame, f"{ang:.0f}°", (kx + 12, ky - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, ac, 1, cv2.LINE_AA)
+        
+        # 3. Player Badge (Jersey # indicators)
+        hx = int(kp.hip_center[0])
+        head_y = int(kp.head[1]) - 35
+        badge = f"  #{self.player_id}  "
+        (tw, th), _ = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
+        bx0 = hx - tw // 2
+        
+        # Semi-transparent backing for badge
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (bx0, head_y - 22), (bx0 + tw, head_y + 6), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+        
+        # Gold border and white text
+        cv2.rectangle(frame, (bx0, head_y - 22), (bx0 + tw, head_y + 6), (255, 215, 0), 1)
+        cv2.putText(frame, badge, (bx0 + 2, head_y + 1),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 1, cv2.LINE_AA)
+        
+        return frame
 
     def _calibrate(self,kp):
         leg=(dist2d(kp.left_hip,kp.left_ankle)+dist2d(kp.right_hip,kp.right_ankle))/2; self.PIX_TO_M=0.9/leg if leg>10 else 0.002
@@ -831,26 +1156,9 @@ class SportsAnalyzer:
         for fm in self.frame_metrics:
             sr=max(0.,(100-fm.gait_symmetry)/100); vr=min(1.,fm.stride_variability/25); lr=min(1.,fm.trunk_lean/40); fm.fall_risk = clamp01(sr*.3 + vr*.2 + lr*.2 + lat_bal*.3); ar=min(1.,abs(fm.acceleration)/12); fm.injury_risk=fm.joint_stress*.5+ar*.3+fm.fatigue_index*.2
 
-    def _draw_trail(self,frame):
-        pts=list(self._trail)
-        if len(pts)<2: return frame
-        ov=frame.copy()
-        for i in range(1,len(pts)): t=i/len(pts); col=lerp_color((40,40,120),(0,220,255),t); cv2.line(ov,pts[i-1],pts[i],col,max(1,int(t*4)),cv2.LINE_AA)
-        cv2.circle(ov,pts[0],3,(80,80,180),-1,cv2.LINE_AA); frame[:]=cv2.addWeighted(ov,.55,frame,.45,0); return frame
-
-    def _annotate(self,frame,pf,fm,W,H):
-        kp=pf.kp; rt=clamp01(fm.risk_score/100.); render_skeleton(frame,kp,risk_tint=rt); hx,hy=int(kp.hip_center[0]),int(kp.hip_center[1]); head_y=int(kp.head[1])-28; badge=f"  #{self.player_id}  "; (tw,th),_=cv2.getTextSize(badge,cv2.FONT_HERSHEY_SIMPLEX,.62,2); bx0=hx-tw//2-4
-        cv2.rectangle(frame,(bx0,head_y-20),(bx0+tw+8,head_y+4),(255,220,0),-1); cv2.rectangle(frame,(bx0,head_y-20),(bx0+tw+8,head_y+4),(0,0,0),1); cv2.putText(frame,badge,(bx0+4,head_y),cv2.FONT_HERSHEY_SIMPLEX,.62,(0,0,0),2,cv2.LINE_AA)
-        if fm.speed>.3 and len(self.pose_frames)>=2:
-            prev=self.pose_frames[-2]; dx=kp.hip_center[0]-prev.kp.hip_center[0]; dy=kp.hip_center[1]-prev.kp.hip_center[1]; mag=math.hypot(dx,dy)+1e-6; ar=int(min(fm.speed*14,90)); ex,ey=int(hx+dx/mag*ar),int(hy+dy/mag*ar); sc2=risk_color(fm.speed/10.*100); cv2.arrowedLine(frame,(hx,hy),(ex,ey),sc2,4,cv2.LINE_AA,tipLength=.32); cv2.arrowedLine(frame,(hx,hy),(ex,ey),(255,255,255),1,cv2.LINE_AA,tipLength=.32); spdt=f"{fm.speed:.1f} m/s"; (stw,sth),_=cv2.getTextSize(spdt,cv2.FONT_HERSHEY_SIMPLEX,.52,2); cv2.rectangle(frame,(ex+4,ey-sth-4),(ex+stw+8,ey+4),(0,0,0),-1); cv2.putText(frame,spdt,(ex+6,ey),cv2.FONT_HERSHEY_SIMPLEX,.52,sc2,2,cv2.LINE_AA)
-        for kpt,ang in [(kp.left_knee,fm.left_knee_angle),(kp.right_knee,fm.right_knee_angle)]:
-            kx,ky=int(kpt[0]),int(kpt[1]); ac=(0,220,0) if ang>145 else (0,140,255) if ang>120 else (0,0,220)
-            if ang<130:
-                pulse=int(8+3*math.sin(len(self.pose_frames)*.4)); ov=frame.copy(); cv2.circle(ov,(kx,ky),pulse,(0,0,255),2,cv2.LINE_AA); frame[:]=cv2.addWeighted(ov,.6,frame,.4,0)
-            cv2.putText(frame,f"{ang:.0f}°",(kx+8,ky-5),cv2.FONT_HERSHEY_SIMPLEX,.44,ac,1,cv2.LINE_AA)
-        if fm.direction_change:
-            ov=frame.copy(); cv2.rectangle(ov,(0,0),(W,H),(0,0,180),6); frame[:]=cv2.addWeighted(ov,.55,frame,.45,0); lbl="DIRECTION CHANGE"; (lw,_),_=cv2.getTextSize(lbl,cv2.FONT_HERSHEY_DUPLEX,1.1,2); cv2.rectangle(frame,(W//2-lw//2-10,H-52),(W//2+lw//2+10,H-16),(0,0,0),-1); cv2.putText(frame,lbl,(W//2-lw//2,H-24),cv2.FONT_HERSHEY_DUPLEX,1.1,(0,100,255),2,cv2.LINE_AA)
-        draw_risk_gauge(frame,W-70,H-80,44,fm.risk_score); return frame
+    def _draw_trail(self, frame):
+        # Trail removed — no longer rendered
+        return frame
 
     def _draw_player_aura(self,frame,kp,fm):
         if fm.speed<.5: return frame
@@ -861,37 +1169,203 @@ class SportsAnalyzer:
             ov=frame.copy(); cv2.ellipse(ov,(hx,hy),(rx+exp,ry+exp),0,0,360,col,-1,cv2.LINE_AA); frame[:]=cv2.addWeighted(ov,a,frame,1-a,0)
         return frame
 
-    def _draw_stat_bar(self,frame,x,y,w,h,val,mx,col,lbl,fmt):
-        filled=int(w*clamp01(val/max(mx,1e-6))); cv2.rectangle(frame,(x,y),(x+w,y+h),(35,35,35),-1)
-        for px in range(filled): t=px/max(w-1,1); cv2.line(frame,(x+px,y+1),(x+px,y+h-1),lerp_color(col,lerp_color(col,(255,255,255),.4),t),1)
-        cv2.rectangle(frame,(x,y),(x+w,y+h),(60,60,60),1); cv2.putText(frame,lbl,(x-2,y+h-2),cv2.FONT_HERSHEY_SIMPLEX,.34,(160,160,160),1,cv2.LINE_AA)
-        vt=fmt.format(val); (vw,_),_=cv2.getTextSize(vt,cv2.FONT_HERSHEY_SIMPLEX,.38,1); cv2.putText(frame,vt,(x+w+4,y+h-2),cv2.FONT_HERSHEY_SIMPLEX,.38,col,1,cv2.LINE_AA)
+    def _draw_stat_bar(self, frame, x, y, w, h, val, mx, col, lbl, fmt):
+        """Gradient-filled stat bar with label and value text."""
+        filled = int(w * clamp01(val / max(mx, 1e-6)))
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (28, 28, 32), -1)
+        for px in range(filled):
+            t = px / max(w-1, 1)
+            cv2.line(frame, (x+px, y+1), (x+px, y+h-1),
+                     lerp_color(col, lerp_color(col, (255,255,255), .35), t), 1)
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (55, 55, 60), 1)
+        if lbl:
+            cv2.putText(frame, lbl, (x-2, y+h-1), cv2.FONT_HERSHEY_SIMPLEX,
+                        .34, (160,160,160), 1, cv2.LINE_AA)
+        vt = fmt.format(val)
+        cv2.putText(frame, vt, (x+w+5, y+h-1), cv2.FONT_HERSHEY_SIMPLEX,
+                    .42, col, 1, cv2.LINE_AA)
 
-    def _draw_sparkline(self,frame,x,y,w,h,vals,col=(0,255,200)):
-        v=list(vals)
-        if len(v)<2: return
-        cv2.rectangle(frame,(x,y),(x+w,y+h),(20,20,20),-1); cv2.rectangle(frame,(x,y),(x+w,y+h),(50,50,50),1); mx=max(max(v),.1); pts=[(x+int(i/(len(v)-1)*w),y+h-int(clamp01(vi/mx)*(h-2))-1) for i,vi in enumerate(v)]
-        for i in range(1,len(pts)): cv2.line(frame,pts[i-1],pts[i],lerp_color((0,120,100),col,i/len(pts)),2,cv2.LINE_AA)
-        cv2.circle(frame,pts[-1],3,(255,255,255),-1,cv2.LINE_AA); cv2.putText(frame,f"{v[-1]:.1f}",(x+w+3,y+h),cv2.FONT_HERSHEY_SIMPLEX,.34,col,1,cv2.LINE_AA)
+    def _draw_sparkline(self, frame, x, y, w, h, vals, col=(0,255,200)):
+        v = list(vals)
+        if len(v) < 2: return
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (18, 18, 20), -1)
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (45, 45, 50), 1)
+        mx = max(max(v), .1)
+        pts = [(x + int(i/(len(v)-1)*w),
+                y+h - int(clamp01(vi/mx)*(h-2)) - 1) for i,vi in enumerate(v)]
+        for i in range(1, len(pts)):
+            cv2.line(frame, pts[i-1], pts[i],
+                     lerp_color((0,120,100), col, i/len(pts)), 2, cv2.LINE_AA)
+        cv2.circle(frame, pts[-1], 3, (255,255,255), -1, cv2.LINE_AA)
 
-    def _hud(self,frame,idx,ts,total,visible=True):
-        H,W=frame.shape[:2]; fps=self._fps_cache; PW=230; ov=frame.copy(); cv2.rectangle(ov,(0,0),(PW,H),(8,8,12),-1); frame[:]=cv2.addWeighted(ov,.72,frame,.28,0); cv2.line(frame,(PW-1,0),(PW-1,H),(255,215,0),2); cv2.rectangle(frame,(0,0),(PW,42),(20,20,28),-1); cv2.line(frame,(0,42),(PW,42),(255,215,0),1); cv2.rectangle(frame,(6,6),(34,36),(255,255,255),-1); cv2.rectangle(frame,(20,6),(34,36),(0,0,0),-1); cv2.putText(frame,"JUV",(7,30),cv2.FONT_HERSHEY_SIMPLEX,.42,(0,0,0),1); cv2.putText(frame,"ANALYTICS",(38,18),cv2.FONT_HERSHEY_SIMPLEX,.42,(255,215,0),1,cv2.LINE_AA); dm=_detection_layer.mode.upper() if _detection_layer else "BLOB"; cv2.putText(frame,f"SPORTS SCIENCE  [{dm}]",(38,34),cv2.FONT_HERSHEY_SIMPLEX,.28,(120,120,120),1,cv2.LINE_AA); ts_=self.lock.state; dc={"searching":(0,200,255),"tracking":(0,220,0),"lost":(0,80,255)}.get(ts_,(150,150,150)); st={"searching":"ACQUIRING","tracking":"LIVE","lost":"SEARCHING"}.get(ts_,""); cv2.circle(frame,(10,54),5,dc,-1,cv2.LINE_AA); cv2.putText(frame,st,(20,59),cv2.FONT_HERSHEY_SIMPLEX,.38,dc,1,cv2.LINE_AA); tc=f"{int(ts//60):02d}:{ts%60:05.2f}"; (tcw,_),_=cv2.getTextSize(tc,cv2.FONT_HERSHEY_SIMPLEX,.38,1); cv2.putText(frame,tc,(PW-tcw-6,59),cv2.FONT_HERSHEY_SIMPLEX,.38,(160,160,160),1,cv2.LINE_AA); cv2.rectangle(frame,(0,66),(PW,92),(18,18,26),-1); cv2.putText(frame,f"PLAYER  #{self.player_id}",(8,84),cv2.FONT_HERSHEY_DUPLEX,.52,(255,215,0),1,cv2.LINE_AA)
+    # ── NEW ENLARGED HUD — PW=310, bigger fonts, more readable ───────────────
+    def _hud(self, frame, idx, ts, total, visible=True):
+        H, W = frame.shape[:2]
+        fps  = self._fps_cache
+        PW   = 310          # ← was 230, now wider
+        FS   = 0.48         # base font scale (was ~0.33)
+        FS_S = 0.38         # small label scale
+        FS_V = 0.44         # value scale
+        LH   = 26           # line height for stat rows (was 22)
+        BH   = 10           # bar height (was 7)
+        BW   = 108          # bar width  (was 80)
+        BX   = 96           # bar x offset (was 68)
+
+        # ── Background panel ─────────────────────────────────────────────────
+        ov = frame.copy()
+        cv2.rectangle(ov, (0,0), (PW,H), (8,8,12), -1)
+        frame[:] = cv2.addWeighted(ov, .75, frame, .25, 0)
+        cv2.line(frame, (PW-1,0), (PW-1,H), (255,215,0), 2)
+
+        # ── Header bar ───────────────────────────────────────────────────────
+        cv2.rectangle(frame, (0,0), (PW,48), (20,20,28), -1)
+        cv2.line(frame, (0,48), (PW,48), (255,215,0), 1)
+        # Mini logo block
+        cv2.rectangle(frame, (6,6), (38,42), (255,255,255), -1)
+        cv2.rectangle(frame, (22,6), (38,42), (0,0,0), -1)
+        cv2.putText(frame, "JUV",  (7,36), cv2.FONT_HERSHEY_SIMPLEX, .50, (0,0,0), 1)
+        cv2.putText(frame, "ANALYTICS", (42,22),
+                    cv2.FONT_HERSHEY_SIMPLEX, .50, (255,215,0), 1, cv2.LINE_AA)
+        dm = _detection_layer.mode.upper() if _detection_layer else "BLOB"
+        cv2.putText(frame, f"SPORTS SCIENCE  [{dm}]", (42,38),
+                    cv2.FONT_HERSHEY_SIMPLEX, .30, (120,120,120), 1, cv2.LINE_AA)
+
+        # ── Tracker state + timecode ─────────────────────────────────────────
+        ts_ = self.lock.state
+        dc  = {"searching":(0,200,255),"tracking":(0,220,0),"lost":(0,80,255)}.get(ts_,(150,150,150))
+        st  = {"searching":"ACQUIRING","tracking":"LIVE","lost":"SEARCHING"}.get(ts_,"")
+        cv2.circle(frame, (12,62), 6, dc, -1, cv2.LINE_AA)
+        cv2.putText(frame, st, (24,67), cv2.FONT_HERSHEY_SIMPLEX, .44, dc, 1, cv2.LINE_AA)
+        tc = f"{int(ts//60):02d}:{ts%60:05.2f}"
+        (tcw,_),_ = cv2.getTextSize(tc, cv2.FONT_HERSHEY_SIMPLEX, .44, 1)
+        cv2.putText(frame, tc, (PW-tcw-8, 67),
+                    cv2.FONT_HERSHEY_SIMPLEX, .44, (160,160,160), 1, cv2.LINE_AA)
+
+        # ── Player label bar ─────────────────────────────────────────────────
+        cv2.rectangle(frame, (0,72), (PW,100), (18,18,26), -1)
+        cv2.putText(frame, f"PLAYER  #{self.player_id}", (8,92),
+                    cv2.FONT_HERSHEY_DUPLEX, .62, (255,215,0), 1, cv2.LINE_AA)
+
+        if not self.frame_metrics:
+            return frame
+
+        fm = self.frame_metrics[-1]
+        rc = risk_color(fm.risk_score)
+
+        # ── VELOCITY section ─────────────────────────────────────────────────
+        y0 = 106
+        cv2.putText(frame, "VELOCITY", (8,y0),
+                    cv2.FONT_HERSHEY_SIMPLEX, FS_S, (120,120,120), 1, cv2.LINE_AA)
+        cv2.line(frame, (0,y0+4), (PW,y0+4), (30,30,40), 1)
+        spdt = f"{fm.speed:.1f}"
+        cv2.putText(frame, spdt, (8, y0+46),
+                    cv2.FONT_HERSHEY_DUPLEX, 1.7, (0,255,200), 2, cv2.LINE_AA)
+        cv2.putText(frame, "m/s", (8+int(len(spdt)*26), y0+46),
+                    cv2.FONT_HERSHEY_SIMPLEX, .50, (80,200,160), 1, cv2.LINE_AA)
+        # Sparkline
+        self._draw_sparkline(frame, 8, y0+52, PW-20, 32, self._speed_history)
+        cv2.putText(frame, "3s SPEED HISTORY", (8, y0+96),
+                    cv2.FONT_HERSHEY_SIMPLEX, .30, (80,80,80), 1, cv2.LINE_AA)
+
+        # ── STATS section ────────────────────────────────────────────────────
+        y1 = y0 + 108
+        cv2.putText(frame, "PERFORMANCE", (8, y1),
+                    cv2.FONT_HERSHEY_SIMPLEX, FS_S, (120,120,120), 1, cv2.LINE_AA)
+        cv2.line(frame, (0,y1+4), (PW,y1+4), (30,30,40), 1)
+
+        stats = [
+            ("CADENCE",  fm.cadence,          220.,  (0,200,255),  "{:.0f} spm"),
+            ("STRIDE",   fm.stride_length,    2.5,   (0,255,180),  "{:.2f} m"),
+            ("ENERGY",   fm.energy_expenditure,900., (0,180,255),  "{:.0f} kc"),
+            ("GAIT SYM", fm.gait_symmetry,    100.,  (0,255,150),  "{:.0f}%"),
+            ("TRUNK",    fm.trunk_lean,        30.,  (0,200,220),  "{:.1f}°"),
+        ]
+        for i, (lbl, val, mx, col, fmt) in enumerate(stats):
+            sy = y1 + 14 + i*LH
+            cv2.putText(frame, lbl, (6, sy+BH+1),
+                        cv2.FONT_HERSHEY_SIMPLEX, FS_S, (130,130,130), 1, cv2.LINE_AA)
+            self._draw_stat_bar(frame, BX, sy, BW, BH, val, mx, col, "", fmt)
+
+        # ── JOINT ANGLES section ─────────────────────────────────────────────
+        y2 = y1 + 14 + len(stats)*LH + 8
+        cv2.putText(frame, "JOINT ANGLES", (8, y2),
+                    cv2.FONT_HERSHEY_SIMPLEX, FS_S, (120,120,120), 1, cv2.LINE_AA)
+        cv2.line(frame, (0,y2+4), (PW,y2+4), (30,30,40), 1)
+        for ki, (s, ang) in enumerate([("L KNEE", fm.left_knee_angle),
+                                        ("R KNEE", fm.right_knee_angle)]):
+            sy = y2 + 14 + ki*LH
+            ac = (0,220,0) if ang>145 else (0,140,255) if ang>120 else (0,0,220)
+            cv2.putText(frame, s, (6, sy+BH+1),
+                        cv2.FONT_HERSHEY_SIMPLEX, FS_S, (130,130,130), 1, cv2.LINE_AA)
+            self._draw_stat_bar(frame, BX, sy, BW, BH, ang, 180., ac, "", "{:.0f}°")
+
+        # ── VALGUS section ───────────────────────────────────────────────────
+        y3 = y2 + 14 + 2*LH + 6
+        cv2.putText(frame, "VALGUS", (8, y3),
+                    cv2.FONT_HERSHEY_SIMPLEX, FS_S, (120,120,120), 1, cv2.LINE_AA)
+        cv2.line(frame, (0,y3+4), (PW,y3+4), (30,30,40), 1)
+        for ki, (s, val) in enumerate([("L", fm.l_valgus), ("R", fm.r_valgus)]):
+            sy = y3 + 14 + ki*LH
+            vc = (0,220,0) if val<.1 else (0,140,255) if val<.2 else (0,0,220)
+            cv2.putText(frame, s, (6, sy+BH+1),
+                        cv2.FONT_HERSHEY_SIMPLEX, FS_S, (130,130,130), 1, cv2.LINE_AA)
+            self._draw_stat_bar(frame, BX, sy, BW, BH, val, .4, vc, "", "{:.2f}")
+
+        # ── INJURY RISK section ──────────────────────────────────────────────
+        y4 = y3 + 14 + 2*LH + 8
+        cv2.putText(frame, "INJURY RISK", (8, y4),
+                    cv2.FONT_HERSHEY_SIMPLEX, FS_S, (120,120,120), 1, cv2.LINE_AA)
+        cv2.line(frame, (0,y4+4), (PW,y4+4), (30,30,40), 1)
+        rt = f"{fm.risk_score:.0f}"
+        cv2.putText(frame, rt, (8, y4+44),
+                    cv2.FONT_HERSHEY_DUPLEX, 1.7, rc, 2, cv2.LINE_AA)
+        cv2.putText(frame, "/ 100", (8+int(len(rt)*26), y4+44),
+                    cv2.FONT_HERSHEY_SIMPLEX, .46, (80,80,80), 1, cv2.LINE_AA)
+        rl  = self._risk_label(fm.injury_risk)
+        lc  = (0,200,0) if rl=="Low" else (0,140,255) if rl=="Moderate" else (0,0,220)
+        (rlw,_),_ = cv2.getTextSize(rl, cv2.FONT_HERSHEY_SIMPLEX, .52, 1)
+        rx0, ry0 = 8, y4+50
+        cv2.rectangle(frame, (rx0,ry0), (rx0+rlw+14, ry0+22), lc, -1)
+        cv2.putText(frame, rl, (rx0+7, ry0+16),
+                    cv2.FONT_HERSHEY_SIMPLEX, .52, (0,0,0), 1, cv2.LINE_AA)
+
+        sub_risks = [("FALL",    fm.fall_risk,    1., (0,200,255)),
+                     ("JOINT",   fm.joint_stress,  1., (0,140,255)),
+                     ("FATIGUE", fm.fatigue_index, 1., (0,100,220))]
+        for ki, (lbl, val, mx, col) in enumerate(sub_risks):
+            sy = y4 + 76 + ki*LH
+            cv2.putText(frame, lbl, (6, sy+9),
+                        cv2.FONT_HERSHEY_SIMPLEX, FS_S, (110,110,110), 1, cv2.LINE_AA)
+            self._draw_stat_bar(frame, BX, sy, BW, 8, val, mx,
+                                risk_color(val*100), "", "{:.2f}")
+
+        # ── Progress bar ─────────────────────────────────────────────────────
+        prog = clamp01(ts / max(total/fps, 1e-6))
+        pby  = H - 20
+        cv2.rectangle(frame, (0,pby), (PW,H), (14,14,18), -1)
+        if prog > 0:
+            cv2.rectangle(frame, (0,pby+2), (int(PW*prog), H-2), (255,215,0), -1)
+            cv2.putText(frame, f"{prog*100:.0f}%", (PW//2-12, H-4),
+                        cv2.FONT_HERSHEY_SIMPLEX, .36,
+                        (0,0,0) if prog>.3 else (130,130,130), 1, cv2.LINE_AA)
+
+        # Risk bar along bottom of video area
         if self.frame_metrics:
-            fm=self.frame_metrics[-1]; rc=risk_color(fm.risk_score); y0=100; cv2.putText(frame,"VELOCITY",(8,y0),cv2.FONT_HERSHEY_SIMPLEX,.33,(120,120,120),1,cv2.LINE_AA); cv2.line(frame,(0,y0+3),(PW,y0+3),(30,30,40),1); spdt=f"{fm.speed:.1f}"; cv2.putText(frame,spdt,(8,y0+38),cv2.FONT_HERSHEY_DUPLEX,1.4,(0,255,200),2,cv2.LINE_AA); cv2.putText(frame,"m/s",(8+int(len(spdt)*22),y0+38),cv2.FONT_HERSHEY_SIMPLEX,.42,(80,200,160),1,cv2.LINE_AA); self._draw_sparkline(frame,8,y0+44,PW-20,28,self._speed_history); cv2.putText(frame,"3s SPEED HISTORY",(8,y0+84),cv2.FONT_HERSHEY_SIMPLEX,.28,(80,80,80),1,cv2.LINE_AA); y1=y0+96; BW=80; BH=7; BX=68
-            for i,(lbl,val,mx,col,fmt) in enumerate([("CADENCE",fm.cadence,220.,(0,200,255),"{:.0f} spm"),("STRIDE",fm.stride_length,2.5,(0,255,180),"{:.2f} m"),("ENERGY",fm.energy_expenditure,900.,(0,180,255),"{:.0f} kc"),("GAIT SYM",fm.gait_symmetry,100.,(0,255,150),"{:.0f}%"),("TRUNK",fm.trunk_lean,30.,(0,200,220),"{:.1f}°")]): sy=y1+i*22; cv2.putText(frame,lbl,(6,sy+BH),cv2.FONT_HERSHEY_SIMPLEX,.30,(110,110,110),1,cv2.LINE_AA); self._draw_stat_bar(frame,BX,sy,BW,BH,val,mx,col,"",fmt)
-            y2=y1+5*22+8; cv2.putText(frame,"JOINT ANGLES",(8,y2),cv2.FONT_HERSHEY_SIMPLEX,.33,(120,120,120),1,cv2.LINE_AA); cv2.line(frame,(0,y2+3),(PW,y2+3),(30,30,40),1)
-            for ki,(s,ang) in enumerate([("L KNEE",fm.left_knee_angle),("R KNEE",fm.right_knee_angle)]): sy=y2+14+ki*20; ac=(0,220,0) if ang>145 else (0,140,255) if ang>120 else (0,0,220); cv2.putText(frame,s,(6,sy+10),cv2.FONT_HERSHEY_SIMPLEX,.32,(110,110,110),1,cv2.LINE_AA); self._draw_stat_bar(frame,BX,sy,BW,BH,ang,180.,ac,"","{:.0f}°")
-            y3=y2+14+2*20+6; cv2.putText(frame,"VALGUS",(8,y3),cv2.FONT_HERSHEY_SIMPLEX,.33,(120,120,120),1,cv2.LINE_AA); cv2.line(frame,(0,y3+3),(PW,y3+3),(30,30,40),1)
-            for ki,(s,val) in enumerate([("L",fm.l_valgus),("R",fm.r_valgus)]): sy=y3+14+ki*20; vc=(0,220,0) if val<.1 else (0,140,255) if val<.2 else (0,0,220); cv2.putText(frame,s,(6,sy+10),cv2.FONT_HERSHEY_SIMPLEX,.32,(110,110,110),1,cv2.LINE_AA); self._draw_stat_bar(frame,BX,sy,BW,BH,val,.4,vc,"","{:.2f}")
-            y4=y3+14+2*20+8; cv2.putText(frame,"INJURY RISK",(8,y4),cv2.FONT_HERSHEY_SIMPLEX,.33,(120,120,120),1,cv2.LINE_AA); cv2.line(frame,(0,y4+3),(PW,y4+3),(30,30,40),1); rt=f"{fm.risk_score:.0f}"; cv2.putText(frame,rt,(8,y4+38),cv2.FONT_HERSHEY_DUPLEX,1.4,rc,2,cv2.LINE_AA); cv2.putText(frame,"/ 100",(8+int(len(rt)*22),y4+38),cv2.FONT_HERSHEY_SIMPLEX,.4,(80,80,80),1,cv2.LINE_AA); rl=self._risk_label(fm.injury_risk); lc=(0,200,0) if rl=="Low" else (0,140,255) if rl=="Moderate" else (0,0,220); (rlw,_),_=cv2.getTextSize(rl,cv2.FONT_HERSHEY_SIMPLEX,.42,1); rx0=8; ry0=y4+44; cv2.rectangle(frame,(rx0,ry0),(rx0+rlw+10,ry0+18),lc,-1); cv2.putText(frame,rl,(rx0+5,ry0+13),cv2.FONT_HERSHEY_SIMPLEX,.42,(0,0,0),1,cv2.LINE_AA)
-            for ki,(lbl,val,mx,col) in enumerate([("FALL",fm.fall_risk,1.,(0,200,255)),("JOINT",fm.joint_stress,1.,(0,140,255)),("FATIGUE",fm.fatigue_index,1.,(0,100,220))]): sy=y4+68+ki*20; cv2.putText(frame,lbl,(6,sy+8),cv2.FONT_HERSHEY_SIMPLEX,.28,(100,100,100),1,cv2.LINE_AA); self._draw_stat_bar(frame,BX,sy,BW,6,val,mx,risk_color(val*100),"","{:.2f}")
-        prog=clamp01(ts/max(total/fps,1e-6)); pby=H-18; cv2.rectangle(frame,(0,pby),(PW,H),(15,15,20),-1)
-        if prog>0: cv2.rectangle(frame,(0,pby+2),(int(PW*prog),H-2),(255,215,0),-1); cv2.putText(frame,f"{prog*100:.0f}%",(PW//2-10,H-4),cv2.FONT_HERSHEY_SIMPLEX,.32,(0,0,0) if prog>.3 else (120,120,120),1,cv2.LINE_AA)
-        if self.frame_metrics:
-            rc2=risk_color(self.frame_metrics[-1].risk_score); bw=int((W-PW)*clamp01(self.frame_metrics[-1].risk_score/100.)); cv2.rectangle(frame,(PW,H-8),(W,H),(20,20,20),-1)
-            if bw>0: cv2.rectangle(frame,(PW,H-8),(PW+bw,H),rc2,-1)
-        if not visible and ts_=="lost":
-            bov=frame.copy(); cv2.rectangle(bov,(PW,H//2-35),(W,H//2+35),(0,0,0),-1); frame[:]=cv2.addWeighted(bov,.70,frame,.30,0); cv2.putText(frame,f"PLAYER #{self.player_id} — OUT OF FRAME",(PW+20,H//2+8),cv2.FONT_HERSHEY_DUPLEX,.75,(0,140,255),2,cv2.LINE_AA)
+            rc2 = risk_color(self.frame_metrics[-1].risk_score)
+            bw2 = int((W-PW)*clamp01(self.frame_metrics[-1].risk_score/100.))
+            cv2.rectangle(frame, (PW, H-9), (W, H), (20,20,20), -1)
+            if bw2 > 0:
+                cv2.rectangle(frame, (PW, H-9), (PW+bw2, H), rc2, -1)
+
+        # Out-of-frame banner
+        if not visible and ts_ == "lost":
+            bov = frame.copy()
+            cv2.rectangle(bov, (PW, H//2-38), (W, H//2+38), (0,0,0), -1)
+            frame[:] = cv2.addWeighted(bov, .70, frame, .30, 0)
+            cv2.putText(frame, f"PLAYER #{self.player_id} — OUT OF FRAME",
+                        (PW+20, H//2+10), cv2.FONT_HERSHEY_DUPLEX,
+                        .80, (0,140,255), 2, cv2.LINE_AA)
+
         return frame
 
     def _build_summary(self):
@@ -974,3 +1448,8 @@ class SportsAnalyzer:
     def print_report(self):
         # Use the centralized report string for consistent formatting
         print(self.get_report_string())
+
+# TO DO: Test pip install sports2d pose2sim
+# TO DO: Test pip install kineticstoolkit 
+
+# To run :  python run_analysis.py --video match.mp4 --yolo-size l 

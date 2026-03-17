@@ -76,9 +76,9 @@ Input/
 *.webm
 
 # Output Videos (Generated annotated videos)
-Output/
-output/
-output_annotated.mp4
+# Output/
+# output/
+# output_annotated.mp4
 *.avi
 
 # Generated Metrics (Regeneratable data)

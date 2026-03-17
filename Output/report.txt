@@ -1,0 +1,31 @@
+======================================================================
+               JUVENTUS ANALYTICS v4 — Player #1 [YOLO]               
+======================================================================
+
+SESSION OVERVIEW
+----------------------------------------------------------------------
+  Duration        :    3.1 s
+  Total Frames    :    162
+  Total Distance  :    4.5 m
+
+PLAYER METRICS
+----------------------------------------------------------------------
+  Avg Speed       :   1.67 m/s
+  Max Speed       :   3.00 m/s
+  Avg Stride      :   0.37 m
+  Avg Cadence     :    196 spm
+  Avg Step Time   :   0.31 s
+  Changes/Min     : 1393.5
+  Energy Burn     :    550 kcal/hr
+
+RISK INDICATORS
+----------------------------------------------------------------------
+  Peak Risk Score :     74 / 100
+  Gait Symmetry   :   81.5 %
+  Fall Risk       : Low       
+  Injury Risk     : Low       
+  Body Stress     : Low       
+  Fatigue Level   : Low       
+  Risk Detail     :                     
+
+======================================================================

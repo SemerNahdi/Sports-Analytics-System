@@ -59,6 +59,23 @@ Core libraries include:
 
 ---
 
+## Environment Setup
+
+To ensure all dependencies are correctly managed, it is recommended to use the included virtual environment (`venv`).
+
+### Activating the Environment
+
+| Shell               | Command                        |
+| :------------------ | :----------------------------- |
+| **Bash (Git Bash)** | `source venv/Scripts/activate` |
+| **PowerShell**      | `.\venv\Scripts\Activate.ps1`  |
+| **Command Prompt**  | `.\venv\Scripts\activate`      |
+
+> [!IMPORTANT]
+> When using **Bash** on Windows, you **must** use forward slashes (`/`). Using backslashes (`\`) will result in a "command not found" error.
+
+---
+
 ## How to Run
 
 The system is executed via `run_analysis.py`.
@@ -118,3 +135,27 @@ Upon completion, the system generates:
 - **Metrics JSON**: Full raw data for integration with other software.
 - **Metrics CSV**: Tabular data ready for Excel or Python-based research.
 - **Terminal Summary**: A text report containing aggregate performance statistics.
+
+---
+
+## Interactive Dashboard Viewer
+
+The system includes a modern, interactive dashboard for exploring the results.
+
+### 🖥️ 1. Start the Server
+
+```bash
+python serve_dashboard.py
+```
+
+### 🌍 2. Open in Browser
+
+Once the server is running, visit:
+[http://localhost:8000/dashboard.html](http://localhost:8000/dashboard.html)
+
+### Features:
+
+- **Live Video Playback**: Syncs annotated footage with live metrics.
+- **Biomechanical Trends**: Dynamic charts for rhythm, timing, and knee angles.
+- **Injury Risk Comparison**: Real-time evaluation against professional benchmarks.
+- **Theme Switch**: Light and Dark mode support.

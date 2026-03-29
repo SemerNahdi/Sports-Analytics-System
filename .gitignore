@@ -70,28 +70,25 @@ desktop.ini
 input/
 Input/
 *.mp4
-!Output/output_annotated.mp4
 *.avi
 *.mov
 *.mkv
 *.webm
 
 # Output Videos (Generated annotated videos)
-# Output/
-# output/
-# output_annotated.mp4
+Output/
+output/
+output_annotated.mp4
 *.avi
 
 # Generated Metrics (Regeneratable data)
 # metrics.json
 # metrics.csv
-# !Output/metrics.json
-# !Output/report.txt
-# !Output/bio.csv
 
 # Logs
 logs/
 *.log
+original_Sports2D/
 
 # Environment Variables (API Keys, Configs)
 .env

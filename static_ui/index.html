@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sports Analytics System - Management Portal</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #F2F2F2; /* Clean White */
+            --bg: #0A0A0A;
+            --card: #141414;
+            --text: #F2F2F2;
+            --accent: #2A2A2A;
+            --muted: #888;
+            --glass: rgba(255, 255, 255, 0.05);
+            --gradient: linear-gradient(135deg, #FFF 0%, #AAA 100%);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            overflow-x: hidden;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            background: var(--card);
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.8);
+            border: 1px solid var(--accent);
+            position: relative;
+            z-index: 10;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        h1 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+            background: var(--gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        p.subtitle {
+            color: var(--muted);
+            font-size: 1rem;
+            letter-spacing: 0.5px;
+        }
+
+        form {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .form-group.full-width {
+            grid-column: span 2;
+        }
+
+        label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #777;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        input[type="file"], input[type="text"], input[type="number"], select {
+            background: #000;
+            border: 1px solid var(--accent);
+            padding: 14px 18px;
+            border-radius: 10px;
+            color: white;
+            font-size: 1rem;
+            transition: all 0.2s ease;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: #FFF;
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.05);
+        }
+
+        input[type="file"]::file-selector-button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            margin-right: 15px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            color: #AAA;
+        }
+
+        .checkbox-group input {
+            cursor: pointer;
+            accent-color: #FFF;
+            width: 18px;
+            height: 18px;
+        }
+
+        button {
+            grid-column: span 2;
+            margin-top: 20px;
+            padding: 18px;
+            border-radius: 12px;
+            border: none;
+            background: var(--primary);
+            color: #000;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+        }
+
+        button:hover {
+            background: #FFF;
+            transform: translateY(-1px);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            background: #222;
+            color: #444;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        #status {
+            grid-column: span 2;
+            margin-top: 30px;
+            padding: 24px;
+            background: #000;
+            border-radius: 12px;
+            border: 1px solid var(--accent);
+            display: none;
+            animation: fadeIn 0.4s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .loader {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            color: #BBB;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #FFF;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .results {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        .result-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #111;
+            padding: 14px 20px;
+            border-radius: 8px;
+            border: 1px solid var(--accent);
+            transition: border-color 0.2s;
+        }
+
+        .result-item:hover {
+            border-color: #555;
+        }
+
+        .result-item a {
+            color: #FFF;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.8rem;
+            letter-spacing: 1px;
+            border: 1px solid #444;
+            padding: 6px 12px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        .result-item a:hover {
+            background: #FFF;
+            color: #000;
+            border-color: #FFF;
+        }
+
+        .badge {
+            background: var(--accent);
+            color: #AAA;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        @media (max-width: 600px) {
+            form { grid-template-columns: 1fr; }
+            .form-group.full-width { grid-column: auto; }
+            button { grid-column: auto; }
+            #status { grid-column: auto; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Analytics System</h1>
+            <p class="subtitle">AI-Powered Biomechanics Port</p>
+        </header>
+
+        <form id="analysisForm">
+            <div class="form-group full-width">
+                <label for="file">Source Video (.mp4)</label>
+                <input type="file" id="file" name="file" accept="video/mp4" required>
+            </div>
+
+            <div class="form-group">
+                <label for="player_id">Subject ID</label>
+                <input type="number" id="player_id" name="player_id" value="1" min="1">
+            </div>
+
+            <div class="form-group">
+                <label for="yolo_size">Tracker Precision</label>
+                <select id="yolo_size" name="yolo_size">
+                    <option value="n">Lite</option>
+                    <option value="s">Standard</option>
+                    <option value="m" selected>Advanced</option>
+                    <option value="l">High-Def</option>
+                    <option value="x">Clinical</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="player_height">Height (m)</label>
+                <input type="number" id="player_height" name="player_height" value="1.75" step="0.01">
+            </div>
+
+            <div class="form-group">
+                <label for="mass_kg">Mass (kg)</label>
+                <input type="number" id="mass_kg" name="mass_kg" value="75" step="1">
+            </div>
+
+            <div class="form-group">
+                <label class="checkbox-group">
+                    <input type="checkbox" id="run_sports2d" name="run_sports2d">
+                    Include Deep Pipeline (Extended)
+                </label>
+            </div>
+
+            <button type="submit" id="submitBtn">Process Analysis</button>
+        </form>
+
+        <div id="status">
+            <div id="loadingMessage" style="display: none;">
+                <div class="loader">
+                    <div class="spinner"></div>
+                    <div>Processing... This may take several minutes for deep analysis.</div>
+                </div>
+            </div>
+            
+            <div id="resultContent" style="display: none;">
+                <h3 style="margin-bottom: 20px; font-weight: 600; font-size: 1.1rem; text-transform: uppercase; letter-spacing: 1px;">Reports Generated</h3>
+                <div class="results" id="resultsList">
+                    <!-- Results will be injected here -->
+                </div>
+            </div>
+
+            <div id="errorMessage" style="display: none; color: #FFF; background: #330000; padding: 15px; border-radius: 8px;">
+                <strong>Error:</strong> <span id="errorText"></span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('analysisForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const statusDiv = document.getElementById('status');
+        const loadingMessage = document.getElementById('loadingMessage');
+        const resultContent = document.getElementById('resultContent');
+        const resultsList = document.getElementById('resultsList');
+        const errorMessage = document.getElementById('errorMessage');
+        const errorText = document.getElementById('errorText');
+
+        form.onsubmit = async (e) => {
+            e.preventDefault();
+            
+            // UI Update
+            submitBtn.disabled = true;
+            statusDiv.style.display = 'block';
+            loadingMessage.style.display = 'block';
+            resultContent.style.display = 'none';
+            errorMessage.style.display = 'none';
+            resultsList.innerHTML = '';
+
+            const formData = new FormData(form);
+            
+            try {
+                const response = await fetch('/analyze', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Analysis failed');
+                }
+
+                // Success!
+                loadingMessage.style.display = 'none';
+                resultContent.style.display = 'block';
+                
+                const addResult = (label, url) => {
+                    if (!url) return;
+                    const item = document.createElement('div');
+                    item.className = 'result-item';
+                    item.innerHTML = `
+                        <div>
+                            <span class="badge">${label.split(' ')[0]}</span>
+                            <span style="margin-left: 10px; font-size: 0.85rem; color: #EEE;">${label}</span>
+                        </div>
+                        <a href="${url}" target="_blank">OPEN</a>
+                    `;
+                    resultsList.appendChild(item);
+                };
+
+                // Video
+                addResult('Analysis Video', data.results.annotated_video);
+                
+                // Data files
+                if (data.results.data_files) {
+                    Object.entries(data.results.data_files).forEach(([name, url]) => {
+                        addResult(`Data: ${name}`, url);
+                    });
+                }
+
+                // Plots (Filtering for PNG as it is widely used)
+                if (data.results.analytical_plots) {
+                    Object.entries(data.results.analytical_plots).forEach(([name, url]) => {
+                        if (name.endsWith('.png')) {
+                            addResult(`Plot: ${name}`, url);
+                        }
+                    });
+                }
+
+            } catch (err) {
+                loadingMessage.style.display = 'none';
+                errorMessage.style.display = 'block';
+                errorText.innerText = err.message;
+            } finally {
+                submitBtn.disabled = false;
+            }
+        };
+    </script>
+</body>
+</html>

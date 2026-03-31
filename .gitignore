@@ -78,6 +78,7 @@ Input/
 # Output Videos (Generated annotated videos)
 Output/
 output/
+white_attack_Sports2D/
 output_annotated.mp4
 *.avi
 

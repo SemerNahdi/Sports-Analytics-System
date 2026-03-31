@@ -1362,57 +1362,101 @@ class Sports2DRunner:
 
         os.makedirs(self.result_dir, exist_ok=True)
 
+        # Absolute path so Sports2D can locate the video regardless of cwd
+        video_abs = str(os.path.abspath(self.video_path))
+        result_abs = str(os.path.abspath(self.result_dir))
+
         config = {
+            # ── base: I/O, display, and what to save ──────────────────────────
             "base": {
-                "video_input":            self.video_path,
-                "result_dir":             self.result_dir,
+                "video_input":            video_abs,
+                "video_dir":              "",          # video_abs already absolute
+                "result_dir":             result_abs,
                 "nb_persons_to_detect":   1,
                 "person_ordering_method": self.person_ordering,
                 "first_person_height":    self.player_height_m,
-                "floor_angle":            "auto",
-                "xy_origin":              "auto",
-                "to_meters":              True,
-                "participant_mass":       self.participant_mass_kg,
-                "save_vid":    True,
-                "save_img":    False,
-                "save_pose":   True,
-                "save_angles": True,
-                "save_graphs": True,
-                "save_calib":  True,
-                "make_c3d":    True,
-                "show_realtime_results": self.show_realtime,
-                "show_graphs":           False,
-                "do_ik":             self.do_ik,
-                "use_augmentation":  self.use_augmentation,
-                "visible_side":      self.visible_side,
+                "visible_side":           ["auto", "front", "none"],
+                "load_trc_px":            "",
+                "compare":                False,
+                "time_range":             [],
+                "webcam_id":              0,
+                "input_size":             [1280, 720],
+                "show_realtime_results":  self.show_realtime,
+                "save_vid":               True,
+                "save_img":               False,
+                "save_pose":              True,
+                "calculate_angles":       True,   # ← must be in base, not angles
+                "save_angles":            True,
             },
+            # ── pose: model and detection parameters ──────────────────────────
             "pose": {
+                "pose_model":    "Body_with_feet",
                 "mode":          self.mode,
                 "det_frequency": 4,
-                "input_size":    [1280, 720],
+                "slowmo_factor": 1,
+                "backend":       "auto",
+                "device":        "auto",
+                "tracking_mode": "sports2d",
                 "keypoint_likelihood_threshold": 0.3,
                 "average_likelihood_threshold":  0.5,
+                "keypoint_number_threshold":     0.3,
             },
+            # ── px_to_meters_conversion: separate section (NOT in base) ───────
+            "px_to_meters_conversion": {
+                "to_meters":         True,
+                "make_c3d":          True,
+                "save_calib":        True,
+                "floor_angle":       "auto",
+                "xy_origin":         ["auto"],
+                "perspective_value": 10,
+                "perspective_unit":  "distance_m",
+                "distortions":       [0.0, 0.0, 0.0, 0.0, 0.0],
+                "calib_file":        "",
+            },
+            # ── angles: which angles to compute and display ───────────────────
             "angles": {
                 "joint_angles":   self.JOINT_ANGLES,
                 "segment_angles": self.SEGMENT_ANGLES,
-                "flip_left_right":                          True,
-                "correct_segment_angles_with_floor_angle":  True,
-                "display_angle_values_on":                  "body",
-                "fontSize":                                 0.4,
-                "calculate_angles":                         True,
+                "correct_segment_angles_with_floor_angle": True,
+                "display_angle_values_on": ["body", "list"],
+                "fontSize": 0.3,
             },
-            "filtering": {
+            # ── post-processing: filtering and graph saving ───────────────────
+            # IMPORTANT: show_graphs and save_graphs live HERE, not in base
+            "post-processing": {
                 "interpolate":             True,
-                "interp_gap_smaller_than": 10,
+                "interp_gap_smaller_than": 100,
                 "fill_large_gaps_with":    "last_value",
+                "sections_to_keep":        "all",
+                "min_chunk_size":          10,
                 "reject_outliers":         True,
                 "filter":                  True,
+                "show_graphs":             False,  # never pop up windows
+                "save_graphs":             True,   # ← save PNGs to result_dir
                 "filter_type":             "butterworth",
-                "cut_off_frequency":       6,
-                "order":                   4,
-                "sections_to_keep":        "largest",
-                "min_chunk_size":          10,
+                "butterworth": {
+                    "cut_off_frequency": 6,
+                    "order": 4,
+                },
+            },
+            # ── kinematics: OpenSim IK (requires full OpenSim install) ────────
+            "kinematics": {
+                "do_ik":               self.do_ik,
+                "use_augmentation":    self.use_augmentation,
+                "feet_on_floor":       False,
+                "use_simple_model":    False,
+                "participant_mass":    [self.participant_mass_kg],
+                "right_left_symmetry": True,
+                "default_height":      self.player_height_m,
+                "fastest_frames_to_remove_percent": 0.1,
+                "slowest_frames_to_remove_percent": 0.2,
+                "large_hip_knee_angles":            45,
+                "trimmed_extrema_percent":          0.5,
+                "remove_individual_scaling_setup":  True,
+                "remove_individual_ik_setup":       True,
+            },
+            "logging": {
+                "use_custom_logging": False,
             },
         }
 
@@ -1475,27 +1519,93 @@ class Sports2DRunner:
         return out
 
     def _reencode_videos(self):
+        """
+        Re-encode Sports2D's mp4v videos to a universally playable format.
+
+        Sports2D writes with cv2.VideoWriter_fourcc(*'mp4v') which produces
+        files that won't open in Windows Media Player or many web players.
+
+        Strategy:
+          1. Try ffmpeg (best quality, H.264 + AAC)
+          2. Fall back to OpenCV frame-by-frame re-encode with avc1/mp4v
+             (no audio, but always works without extra installs)
+        """
         import subprocess
         import shutil
-        if not shutil.which("ffmpeg"):
-            return
+
         reencoded = []
         for raw in self.outputs.get("annotated_video", []):
             base, _ = os.path.splitext(raw)
             out_path = base + "_h264.mp4"
-            cmd = [
-                "ffmpeg", "-y", "-i", raw,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-                "-pix_fmt", "yuv420p", "-c:a", "aac",
-                out_path,
-            ]
+
+            # ── Try ffmpeg first ──────────────────────────────────────────────
+            if shutil.which("ffmpeg"):
+                cmd = [
+                    "ffmpeg", "-y", "-i", raw,
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac",
+                    out_path,
+                ]
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                    if result.returncode == 0 and os.path.getsize(out_path) > 1000:
+                        print(f"[S2D] ffmpeg → {out_path}")
+                        reencoded.append(out_path)
+                        continue
+                    else:
+                        print(f"[S2D] ffmpeg failed (rc={result.returncode}), trying OpenCV fallback")
+                except Exception as e:
+                    print(f"[S2D] ffmpeg exception: {e}, trying OpenCV fallback")
+
+            # ── OpenCV fallback: read mp4v, write avc1/mp4v ───────────────────
+            print(f"[S2D] OpenCV re-encode: {raw} → {out_path}")
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-                if result.returncode == 0:
+                cap = cv2.VideoCapture(raw)
+                if not cap.isOpened():
+                    print(f"[S2D] Cannot open source video: {raw}")
+                    continue
+                fps    = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+                # Try codecs in order of compatibility
+                writer = None
+                for fourcc_str in ["avc1", "H264", "mp4v"]:
+                    fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
+                    w = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
+                    if w.isOpened():
+                        writer = w
+                        print(f"[S2D] Using codec: {fourcc_str}")
+                        break
+                    w.release()
+
+                if writer is None:
+                    print(f"[S2D] No working codec found for re-encode")
+                    cap.release()
+                    continue
+
+                frame_count = 0
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    writer.write(frame)
+                    frame_count += 1
+
+                cap.release()
+                writer.release()
+
+                if frame_count > 0 and os.path.getsize(out_path) > 1000:
+                    print(f"[S2D] OpenCV re-encoded {frame_count} frames → {out_path}")
                     reencoded.append(out_path)
-                    self.outputs["annotated_video_h264"] = reencoded
-            except Exception:
-                pass
+                else:
+                    print(f"[S2D] Re-encode produced empty file, keeping original")
+
+            except Exception as e:
+                print(f"[S2D] OpenCV re-encode failed: {e}")
+
+        if reencoded:
+            self.outputs["annotated_video_h264"] = reencoded
 
     def load_mot_angles(self) -> Optional[pd.DataFrame]:
         mots = self.outputs.get("mot_angles", [])

@@ -1,0 +1,335 @@
+
+
+---------------------------------------------------------------------
+Processing white_attack.mp4
+On Tuesday 31. March 2026, 14:31:39
+---------------------------------------------------------------------
+
+Estimating pose...
+Using HALPE_26 model (body and feet) for pose estimation in balanced mode.
+
+No valid CUDA installation found: using OpenVINO backend with CPU.
+Persons detection is run every 4 frames (pose estimation is run at every frame). Tracking is done with sports2d.
+All persons are analyzed. Person ordering method is on_click.
+keypoint_likelihood_threshold=0.3, average_likelihood_threshold=0.5, keypoint_number_threshold=0.3
+Skipping right wrist angle computation because at least one of the following keypoints is not provided by the pose estimation model: ['RElbow', 'RWrist', 'RIndex'].
+Skipping left wrist angle computation because at least one of the following keypoints is not provided by the pose estimation model: ['LElbow', 'LIndex', 'LWrist'].
+
+Processing video stream...
+Video processing completed.
+You selected more (or less) than the required 51 persons. "nb_persons_to_detect" will be set to 1.
+Reordered persons: IDs of persons [8] become [0].
+
+Post-processing pose:
+- Person 0: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person00.trc.
+
+Converting pose to meters:
+Converting from pixels to meters using a person height of 1.65 in meters (manual input), and of 75.28 in pixels (calculated).
+Perspective effects corrected using a camera-to-person distance of 10.00 m (obtained from a manual input).
+Camera horizon: 3.40°, corrected using gait kinematics.
+Floor level: 732.03 px (from the top of the image), gait starting at 0.00 px in the right direction for the first person. Corrected using gait kinematics.
+
+Calibration saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_calib.toml.
+- Person 0: Seen from the right.
+Pose plots (m) saved in C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_graphs.
+Pose in meters saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_m_person00.trc. Also saved in c3d format.
+
+Post-processing angles (without inverse kinematics):
+- Person 0: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Correcting segment angles by removing the 3.4° floor angle.
+Angles saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_angles_person00.mot.
+Pose plots (m) saved in C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_graphs.
+
+Saving images of processed pose and angles:
+Processed video saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D.mp4.
+Processed images saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_img.
+
+Processing white_attack.mp4 took 741.70 s.
+
+
+---------------------------------------------------------------------
+Processing white_attack.mp4
+On Wednesday 01. April 2026, 14:59:49
+---------------------------------------------------------------------
+OpenSim package is not installed. Please install it to use inverse kinematics or marker augmentation features (see 'Full install' section of the documentation).
+
+
+---------------------------------------------------------------------
+Processing white_attack.mp4
+On Wednesday 01. April 2026, 15:02:34
+---------------------------------------------------------------------
+OpenSim package is not installed. Please install it to use inverse kinematics or marker augmentation features (see 'Full install' section of the documentation).
+
+
+---------------------------------------------------------------------
+Processing white_attack.mp4
+On Wednesday 01. April 2026, 15:02:53
+---------------------------------------------------------------------
+OpenSim package is not installed. Please install it to use inverse kinematics or marker augmentation features (see 'Full install' section of the documentation).
+
+
+---------------------------------------------------------------------
+Processing white_attack.mp4
+On Wednesday 01. April 2026, 15:06:54
+---------------------------------------------------------------------
+OpenSim package is not installed. Please install it to use inverse kinematics or marker augmentation features (see 'Full install' section of the documentation).
+
+
+---------------------------------------------------------------------
+Processing white_attack.mp4
+On Wednesday 01. April 2026, 15:08:00
+---------------------------------------------------------------------
+OpenSim package is not installed. Please install it to use inverse kinematics or marker augmentation features (see 'Full install' section of the documentation).
+
+
+---------------------------------------------------------------------
+Processing white_attack.mp4
+On Wednesday 01. April 2026, 15:11:24
+---------------------------------------------------------------------
+
+Estimating pose...
+Using HALPE_26 model (body and feet) for pose estimation in balanced mode.
+
+No valid CUDA installation found: using OpenVINO backend with CPU.
+Persons detection is run every 4 frames (pose estimation is run at every frame). Tracking is done with sports2d.
+All persons are analyzed. Person ordering method is on_click.
+keypoint_likelihood_threshold=0.3, average_likelihood_threshold=0.5, keypoint_number_threshold=0.3
+Skipping right wrist angle computation because at least one of the following keypoints is not provided by the pose estimation model: ['RElbow', 'RWrist', 'RIndex'].
+Skipping left wrist angle computation because at least one of the following keypoints is not provided by the pose estimation model: ['LElbow', 'LIndex', 'LWrist'].
+
+Processing video stream...
+Video processing completed.
+You selected more (or less) than the required 28 persons. "nb_persons_to_detect" will be set to 1.
+Reordered persons: IDs of persons [8] become [0].
+
+Post-processing pose:
+- Person 0: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person00.trc.
+
+Converting pose to meters:
+Converting from pixels to meters using a person height of 1.65 in meters (manual input), and of 104.54 in pixels (calculated).
+Perspective effects corrected using a camera-to-person distance of 10.00 m (obtained from a manual input).
+Camera horizon: 11.37°, corrected using gait kinematics.
+Floor level: 967.56 px (from the top of the image), gait starting at 0.00 px in the right direction for the first person. Corrected using gait kinematics.
+
+Calibration saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_calib.toml.
+- Person 0: Seen from the right.
+Pose plots (m) saved in C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_graphs.
+Pose in meters saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_m_person00.trc. Also saved in c3d format.
+
+Post-processing angles (without inverse kinematics):
+- Person 0: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Correcting segment angles by removing the 11.37° floor angle.
+Angles saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_angles_person00.mot.
+Pose plots (m) saved in C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_graphs.
+
+Saving images of processed pose and angles:
+Processed video saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D.mp4.
+Processed images saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_img.
+
+Post-processing angles (with inverse kinematics):
+- Person 0: Running marker augmentation and inverse kinematics.
+Running marker augmentation...
+Using Stanford LSTM v0.3 augmenter model. Feet are not vertically offset to be at floor level.
+
+Augmented marker coordinates are stored at C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\pose-3d\white_attack_Sports2D_m_person00_LSTM.trc.
+Augmented trc files have been converted to c3d.
+Augmented trc results saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\pose-3d.
+
+Running inverse kinematics...
+Processing TRC file: C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\pose-3d\white_attack_Sports2D_m_person00_LSTM.trc
+
+Scaling...
+	Done. OpenSim logs saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\kinematics\opensim_logs.txt.
+	Scaled model saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\kinematics\white_attack_Sports2D_m_person00_LSTM_scaled.osim
+
+Inverse Kinematics...
+	Done. OpenSim logs saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\kinematics\opensim_logs.txt.
+	Joint angle data saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\kinematics\white_attack_Sports2D_m_person00_LSTM.mot
+
+.osim model and .mot motion file results saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D.
+
+
+Processing white_attack.mp4 took 89.68 s.
+
+
+---------------------------------------------------------------------
+Processing white_attack.mp4
+On Wednesday 01. April 2026, 15:18:27
+---------------------------------------------------------------------
+
+Estimating pose...
+Using HALPE_26 model (body and feet) for pose estimation in balanced mode.
+
+No valid CUDA installation found: using OpenVINO backend with CPU.
+Persons detection is run every 4 frames (pose estimation is run at every frame). Tracking is done with sports2d.
+All persons are analyzed. Person ordering method is on_click.
+keypoint_likelihood_threshold=0.3, average_likelihood_threshold=0.5, keypoint_number_threshold=0.3
+Skipping right wrist angle computation because at least one of the following keypoints is not provided by the pose estimation model: ['RElbow', 'RWrist', 'RIndex'].
+Skipping left wrist angle computation because at least one of the following keypoints is not provided by the pose estimation model: ['LElbow', 'LIndex', 'LWrist'].
+
+Processing video stream...
+Video processing completed.
+No persons selected. Analyzing all detected persons.
+Reordered persons: IDs of persons [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26] become [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26].
+
+Post-processing pose:
+- Person 0: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person00.trc.
+- Person 1: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person01.trc.
+- Person 2: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person02.trc.
+- Person 3: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person03.trc.
+- Person 4: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person04.trc.
+- Person 5: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person05.trc.
+- Person 6: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person06.trc.
+- Person 7: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person07.trc.
+- Person 8: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person08.trc.
+- Person 9: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person09.trc.
+- Person 10: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person10.trc.
+- Person 11: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person11.trc.
+- Person 12: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person12.trc.
+- Person 13: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person13.trc.
+- Person 14: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person14.trc.
+- Person 15: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person15.trc.
+- Person 16: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person16.trc.
+- Person 17: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person17.trc.
+- Person 18: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+
+
+---------------------------------------------------------------------
+Processing white_attack.mp4
+On Wednesday 01. April 2026, 15:20:57
+---------------------------------------------------------------------
+
+Estimating pose...
+Using HALPE_26 model (body and feet) for pose estimation in balanced mode.
+
+No valid CUDA installation found: using OpenVINO backend with CPU.
+Persons detection is run every 4 frames (pose estimation is run at every frame). Tracking is done with sports2d.
+All persons are analyzed. Person ordering method is on_click.
+keypoint_likelihood_threshold=0.3, average_likelihood_threshold=0.5, keypoint_number_threshold=0.3
+Skipping right wrist angle computation because at least one of the following keypoints is not provided by the pose estimation model: ['RElbow', 'RWrist', 'RIndex'].
+Skipping left wrist angle computation because at least one of the following keypoints is not provided by the pose estimation model: ['LElbow', 'LIndex', 'LWrist'].
+
+Processing video stream...
+Video processing completed.
+You selected more (or less) than the required 51 persons. "nb_persons_to_detect" will be set to 1.
+Reordered persons: IDs of persons [17] become [0].
+
+Post-processing pose:
+- Person 0: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Pose in pixels saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_px_person00.trc.
+
+Converting pose to meters:
+Converting from pixels to meters using a person height of 1.65 in meters (manual input), and of 85.98 in pixels (calculated).
+Perspective effects corrected using a camera-to-person distance of 10.00 m (obtained from a manual input).
+Camera horizon: -10.56°, corrected using gait kinematics.
+Floor level: 391.14 px (from the top of the image), gait starting at 0.00 px in the left direction for the first person. Corrected using gait kinematics.
+
+Calibration saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_calib.toml.
+- Person 0: Seen from the left.
+Pose plots (m) saved in C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_graphs.
+Pose in meters saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_m_person00.trc. Also saved in c3d format.
+
+Post-processing angles (without inverse kinematics):
+- Person 0: Interpolating missing sequences if they are smaller than 10 frames. Large gaps filled with last_value.
+Rejecting outliers with a Hampel filter.
+Filtering with Butterworth filter, 4th order, 6.0 Hz.
+Correcting segment angles by removing the -10.56° floor angle.
+Angles saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_angles_person00.mot.
+Pose plots (m) saved in C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_graphs.
+
+Saving images of processed pose and angles:
+Processed video saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D.mp4.
+Processed images saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\white_attack_Sports2D_img.
+
+Post-processing angles (with inverse kinematics):
+- Person 0: Running marker augmentation and inverse kinematics.
+Running marker augmentation...
+Using Stanford LSTM v0.3 augmenter model. Feet are not vertically offset to be at floor level.
+
+Augmented marker coordinates are stored at C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\pose-3d\white_attack_Sports2D_m_person00_LSTM.trc.
+Augmented trc files have been converted to c3d.
+Augmented trc results saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\pose-3d.
+
+Running inverse kinematics...
+Processing TRC file: C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\pose-3d\white_attack_Sports2D_m_person00_LSTM.trc
+
+Scaling...
+	Done. OpenSim logs saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\kinematics\opensim_logs.txt.
+	Scaled model saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\kinematics\white_attack_Sports2D_m_person00_LSTM_scaled.osim
+
+Inverse Kinematics...
+	Done. OpenSim logs saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\kinematics\opensim_logs.txt.
+	Joint angle data saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D\kinematics\white_attack_Sports2D_m_person00_LSTM.mot
+
+.osim model and .mot motion file results saved to C:\Users\semer\Desktop\eSteps\Juventus Sports Analytics System\white_attack_Sports2D.
+
+
+Processing white_attack.mp4 took 759.63 s.

@@ -1,1 +1,1 @@
-web: python serve_dashboard.py
+web: python main.py

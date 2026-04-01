@@ -90,7 +90,7 @@ Navigate to your project folder and run the analysis with Inverse Kinematics ena
 3.  **Run the Command:**
     Replace `match.mp4` with your actual video file.
     ```bash
-    python run_analysis.py --video match.mp4 --pick --sports2d --height 1.80
+ sports2d --video_input white_attack.mp4 --person_ordering_method on_click --do_ik true --use_augmentation True --visible_side auto front --show_realtime_results false
     ```
 
     **Flag Explanation:**

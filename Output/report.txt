@@ -1,31 +1,47 @@
 ======================================================================
-               JUVENTUS ANALYTICS v4 — Player #1 [YOLO]               
+               JUVENTUS ANALYTICS v5 — Player #1 [YOLO]               
 ======================================================================
 
 SESSION OVERVIEW
 ----------------------------------------------------------------------
-  Duration        :    3.1 s
-  Total Frames    :    162
-  Total Distance  :    4.5 m
+  Duration        :   15.9 s
+  Total Frames    :    101
+  Total Distance  :   41.9 m
+  Angle Backend   : sports2d
 
 PLAYER METRICS
 ----------------------------------------------------------------------
-  Avg Speed       :   1.67 m/s
-  Max Speed       :   3.00 m/s
-  Avg Stride      :   0.37 m
-  Avg Cadence     :    196 spm
-  Avg Step Time   :   0.31 s
-  Changes/Min     : 1393.5
-  Energy Burn     :    550 kcal/hr
+  Avg Speed       :  10.98 m/s
+  Max Speed       :  18.50 m/s
+  Avg Stride      :   2.77 m
+  Avg Cadence     :     82 spm
+  Avg Step Time   :   0.73 s
+  Changes/Min     :  189.1
+  Energy (avg)    :  33896 W
+
+BIOMECHANICS  (Butterworth 6 Hz)
+----------------------------------------------------------------------
+  L Knee flexion  :   50.8° avg  59.9° sd
+  R Knee flexion  :   33.1° avg  49.4° sd
+  L Hip flexion   :   47.0°
+  R Hip flexion   :   30.8°
+  L Ankle dorsi   :  136.7°
+  R Ankle dorsi   :  135.9°
+  Trunk lat lean  :    9.6°
+  Pelvis obliquity:   12.7°
+  Arm swing asym  :   20.5°
+  Double support  :   28.7%
+  Heel strikes L/R: 5 / 7
+  L Valgus (clin) :   -8.2°
+  R Valgus (clin) :  +10.6°  ⚠ VALGUS
 
 RISK INDICATORS
 ----------------------------------------------------------------------
-  Peak Risk Score :     74 / 100
-  Gait Symmetry   :   81.5 %
-  Fall Risk       : Low       
-  Injury Risk     : Low       
-  Body Stress     : Low       
-  Fatigue Level   : Low       
-  Risk Detail     :                     
+  Peak Risk Score :     73 / 100
+  Gait Symmetry   :   75.9 %
+  Acute Inj. Risk : High
+  Body Stress     : High
+  Fatigue Level   : Low
+  Risk Detail     : valgus collapse detected (>10°)
 
 ======================================================================

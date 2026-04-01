@@ -29,7 +29,9 @@ except ImportError:
 
 try:
     import matplotlib
-    matplotlib.use("Agg")  # non-interactive backend — safe for headless/server use
+    # NOTE: Do NOT call matplotlib.use("Agg") here globally.
+    # Sports2D needs an interactive backend to show its native graphs.
+    # We set the backend lazily only when our own plotter saves files.
     import matplotlib.pyplot as plt
     HAS_MPL = True
 except ImportError:
@@ -1375,7 +1377,7 @@ class Sports2DRunner:
                 "nb_persons_to_detect":   1,
                 "person_ordering_method": self.person_ordering,
                 "first_person_height":    self.player_height_m,
-                "visible_side":           ["auto", "front", "none"],
+                "visible_side":           [self.visible_side],
                 "load_trc_px":            "",
                 "compare":                False,
                 "time_range":             [],
@@ -1385,7 +1387,6 @@ class Sports2DRunner:
                 "save_vid":               True,
                 "save_img":               False,
                 "save_pose":              True,
-                "calculate_angles":       True,   # ← must be in base, not angles
                 "save_angles":            True,
             },
             # ── pose: model and detection parameters ──────────────────────────
@@ -1415,6 +1416,7 @@ class Sports2DRunner:
             },
             # ── angles: which angles to compute and display ───────────────────
             "angles": {
+                "calculate_angles":   True,          # ← correct location
                 "joint_angles":   self.JOINT_ANGLES,
                 "segment_angles": self.SEGMENT_ANGLES,
                 "correct_segment_angles_with_floor_angle": True,
@@ -1431,8 +1433,8 @@ class Sports2DRunner:
                 "min_chunk_size":          10,
                 "reject_outliers":         True,
                 "filter":                  True,
-                "show_graphs":             False,  # never pop up windows
-                "save_graphs":             True,   # ← save PNGs to result_dir
+                "show_graphs":             self.show_realtime,  # mirrors realtime flag
+                "save_graphs":             True,
                 "filter_type":             "butterworth",
                 "butterworth": {
                     "cut_off_frequency": 6,
@@ -1469,7 +1471,7 @@ class Sports2DRunner:
             return {}
 
         self.outputs = self._collect_outputs()
-        self._reencode_videos()
+        self._copy_videos_to_output()
         return self.outputs
 
     def _collect_outputs(self) -> dict:
@@ -1518,94 +1520,135 @@ class Sports2DRunner:
                 out["osim_setup"].append(f)
         return out
 
-    def _reencode_videos(self):
+    def _copy_videos_to_output(self):
         """
-        Re-encode Sports2D's mp4v videos to a universally playable format.
-
-        Sports2D writes with cv2.VideoWriter_fourcc(*'mp4v') which produces
-        files that won't open in Windows Media Player or many web players.
-
-        Strategy:
-          1. Try ffmpeg (best quality, H.264 + AAC)
-          2. Fall back to OpenCV frame-by-frame re-encode with avc1/mp4v
-             (no audio, but always works without extra installs)
+        Copy the Sports2D annotated video to Output/ with a clean name.
+        If ffmpeg is available, use stream-copy (instant, no quality loss,
+        fixes the container so the file opens everywhere).
+        Otherwise do a plain file copy — simple and always works.
         """
-        import subprocess
-        import shutil
+        import shutil, subprocess
 
-        reencoded = []
+        output_dir = os.path.dirname(self.result_dir)  # e.g. Output/
+        copied = []
+
         for raw in self.outputs.get("annotated_video", []):
-            base, _ = os.path.splitext(raw)
-            out_path = base + "_h264.mp4"
+            if not os.path.isfile(raw) or os.path.getsize(raw) < 1000:
+                print(f"[S2D] Video missing or empty, skipping: {raw}")
+                continue
 
-            # ── Try ffmpeg first ──────────────────────────────────────────────
+            dest = os.path.join(output_dir, "sports2d_annotated.mp4")
+
+            # Prefer ffmpeg stream-copy: remuxes container, no re-encode
             if shutil.which("ffmpeg"):
-                cmd = [
-                    "ffmpeg", "-y", "-i", raw,
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-                    "-pix_fmt", "yuv420p", "-c:a", "aac",
-                    out_path,
-                ]
+                cmd = ["ffmpeg", "-y", "-i", raw,
+                       "-c", "copy", "-movflags", "+faststart", dest]
                 try:
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-                    if result.returncode == 0 and os.path.getsize(out_path) > 1000:
-                        print(f"[S2D] ffmpeg → {out_path}")
-                        reencoded.append(out_path)
+                    r = subprocess.run(cmd, capture_output=True, timeout=300)
+                    if r.returncode == 0 and os.path.getsize(dest) > 1000:
+                        print(f"[S2D] Video → {dest}  (ffmpeg stream-copy)")
+                        copied.append(dest)
                         continue
-                    else:
-                        print(f"[S2D] ffmpeg failed (rc={result.returncode}), trying OpenCV fallback")
-                except Exception as e:
-                    print(f"[S2D] ffmpeg exception: {e}, trying OpenCV fallback")
+                except Exception:
+                    pass
 
-            # ── OpenCV fallback: read mp4v, write avc1/mp4v ───────────────────
-            print(f"[S2D] OpenCV re-encode: {raw} → {out_path}")
+            # Plain copy fallback
+            shutil.copy2(raw, dest)
+            print(f"[S2D] Video → {dest}  (file copy — open with VLC if needed)")
+            copied.append(dest)
+
+        self.outputs["annotated_video_final"] = copied
+
+    def get_seed_from_trc(self) -> Optional[dict]:
+        """
+        Read the first few frames of Sports2D's pixel-space TRC file and
+        return a seed dict compatible with TargetLock / pick_player_interactive.
+
+        The TRC pixel file contains marker X/Y positions in image pixels.
+        We use Hip_Center (or the mean of all markers) to locate the player
+        in frame 0, build a rough bounding box, and sample a colour histogram
+        from that region.
+        """
+        trcs_px = self.outputs.get("trc_pose_px", [])
+        if not trcs_px:
+            return None
+
+        path = trcs_px[0]
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+
+            # Find data start (first numeric row after the 5-line header)
+            data_start = None
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if i >= 4 and stripped and stripped[0].isdigit():
+                    data_start = i
+                    break
+            if data_start is None:
+                return None
+
+            # Header row is 2 lines above data
+            header_idx = max(0, data_start - 2)
+            df = pd.read_csv(path, sep="	", skiprows=header_idx,
+                             encoding="utf-8", on_bad_lines="skip")
+            df.columns = [c.strip() for c in df.columns]
+            df = df.dropna(axis=1, how="all")
+
+            if df.empty or len(df) < 2:
+                return None
+
+            # Find X/Y columns — TRC pixel files use column names like
+            # "Hip_Center" with sub-cols X Y Z, or merged as "Hip_Center.X"
+            x_cols = [c for c in df.columns if c.endswith(".X") or
+                      (c not in ("Frame#", "Time") and ".Y" not in c and ".Z" not in c
+                       and c.replace(".", "").replace("_", "").isalpha())]
+            # Simpler: just grab all numeric columns and average them
+            num = df.select_dtypes(include=[float, int])
+            if num.empty:
+                return None
+
+            # Use first valid frame
+            row = num.iloc[0]
+            xs = [v for i, v in enumerate(row) if i % 3 == 0]  # X cols (every 3rd)
+            ys = [v for i, v in enumerate(row) if i % 3 == 1]  # Y cols
+            xs = [v for v in xs if not np.isnan(v) and v > 0]
+            ys = [v for v in ys if not np.isnan(v) and v > 0]
+
+            if not xs or not ys:
+                return None
+
+            cx = float(np.mean(xs))
+            cy = float(np.mean(ys))
+            # Estimate a reasonable bounding box (~person is ~0.4w × 0.7h of frame)
+            spread_x = float(np.ptp(xs)) if len(xs) > 1 else 80.
+            spread_y = float(np.ptp(ys)) if len(ys) > 1 else 180.
+            w = max(60., spread_x * 1.5)
+            h = max(120., spread_y * 1.3)
+            bx = int(cx - w / 2)
+            by = int(cy - h / 2)
+            seed_bbox = (bx, by, int(w), int(h))
+
+            # Try to sample a histogram from the source video at frame 0
+            hist = None
             try:
-                cap = cv2.VideoCapture(raw)
-                if not cap.isOpened():
-                    print(f"[S2D] Cannot open source video: {raw}")
-                    continue
-                fps    = cap.get(cv2.CAP_PROP_FPS) or 30.0
-                width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-                # Try codecs in order of compatibility
-                writer = None
-                for fourcc_str in ["avc1", "H264", "mp4v"]:
-                    fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
-                    w = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
-                    if w.isOpened():
-                        writer = w
-                        print(f"[S2D] Using codec: {fourcc_str}")
-                        break
-                    w.release()
-
-                if writer is None:
-                    print(f"[S2D] No working codec found for re-encode")
-                    cap.release()
-                    continue
-
-                frame_count = 0
-                while True:
+                cap = cv2.VideoCapture(self.video_path)
+                if cap.isOpened():
                     ret, frame = cap.read()
-                    if not ret:
-                        break
-                    writer.write(frame)
-                    frame_count += 1
-
+                    if ret:
+                        hist = crop_hist(frame, seed_bbox)
                 cap.release()
-                writer.release()
+            except Exception:
+                pass
 
-                if frame_count > 0 and os.path.getsize(out_path) > 1000:
-                    print(f"[S2D] OpenCV re-encoded {frame_count} frames → {out_path}")
-                    reencoded.append(out_path)
-                else:
-                    print(f"[S2D] Re-encode produced empty file, keeping original")
-
-            except Exception as e:
-                print(f"[S2D] OpenCV re-encode failed: {e}")
-
-        if reencoded:
-            self.outputs["annotated_video_h264"] = reencoded
+            return {
+                "seed_bbox":  seed_bbox,
+                "seed_frame": 0,
+                "hist":       hist,
+            }
+        except Exception as e:
+            print(f"[S2D] get_seed_from_trc failed: {e}")
+            return None
 
     def load_mot_angles(self) -> Optional[pd.DataFrame]:
         mots = self.outputs.get("mot_angles", [])
@@ -1845,10 +1888,13 @@ class AnalyticsPlotter:
 
     def _save(self, fig, name: str):
         """Save figure as both PNG (300 DPI) and SVG."""
+        import matplotlib
+        matplotlib.use("Agg")   # headless only for our file-save plots
+        import matplotlib.pyplot as _plt
         base = os.path.join(self.results_dir, name)
         fig.savefig(base + ".png", dpi=300, bbox_inches="tight")
         fig.savefig(base + ".svg", bbox_inches="tight")
-        plt.close(fig)
+        _plt.close(fig)
         print(f"[PLOT] Saved → {base}.png / .svg")
 
     def plot_speed_profile(self, frame_metrics: List[FrameMetrics]):
@@ -2534,15 +2580,12 @@ class SportsAnalyzer:
                      use_augmentation: bool = False,
                      visible_side: str = "auto front",
                      participant_mass_kg: float = 75.0) -> dict:
-        if self.PIX_TO_M and self.pose_frames:
-            heights = []
-            for pf in self.pose_frames[-30:]:
-                h = dist2d(pf.kp.head, pf.kp.left_ankle) * self.PIX_TO_M
-                if 1.4 < h < 2.2:
-                    heights.append(h)
-            if heights:
-                self.player_height_m = float(np.median(heights))
-
+        """
+        Run Sports2D on the video.  This is always the first step — its
+        on_click picker IS the player selection mechanism when --pick is used.
+        After Sports2D finishes, we seed the custom tracker from the TRC data
+        so both pipelines analyse the exact same player.
+        """
         self.sports2d_runner = Sports2DRunner(
             video_path          = self.video_path,
             result_dir          = result_dir,
@@ -2555,7 +2598,20 @@ class SportsAnalyzer:
             use_augmentation    = use_augmentation,
             visible_side        = visible_side,
         )
-        return self.sports2d_runner.run()
+        outputs = self.sports2d_runner.run()
+
+        # ── Seed our custom tracker from Sports2D's TRC output ───────────────
+        # This guarantees both pipelines follow the same player.
+        seed = self.sports2d_runner.get_seed_from_trc()
+        if seed is not None:
+            self.lock = TargetLock(
+                seed["seed_bbox"], seed["hist"], seed["seed_frame"]
+            )
+            print("[S2D] Custom tracker seeded from Sports2D TRC data.")
+        else:
+            print("[S2D] Could not seed from TRC — custom tracker uses original pick.")
+
+        return outputs
 
     # ── Unified export ────────────────────────────────────────────────────────
 

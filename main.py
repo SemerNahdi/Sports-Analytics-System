@@ -50,11 +50,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static files
-static_dir = os.path.join(os.path.dirname(__file__), "static_ui")
-if not os.path.exists(static_dir):
-    os.makedirs(static_dir, exist_ok=True)
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
+# Helpers (moved up)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -104,13 +100,17 @@ def upload_directory_to_supabase(directory: str, prefix: str) -> dict:
 
 # ── API Endpoints ─────────────────────────────────────────────────────────────
 
+static_dir = os.path.join(os.path.dirname(__file__), "static_ui")
+
 @app.get("/")
 async def root():
-    """Serve the gorgeous analysis UI."""
-    index_path = os.path.join(os.path.dirname(__file__), "static_ui", "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {"status": "online", "message": "Juventus Analytics API is running (index.html missing)"}
+    """Serve the root index page."""
+    return FileResponse(os.path.join(static_dir, "index.html"))
+
+@app.get("/dashboard.html")
+async def dashboard():
+    """Serve the analytics dashboard."""
+    return FileResponse(os.path.join(static_dir, "dashboard.html"))
 
 @app.post("/analyze")
 async def analyze_video(
@@ -292,6 +292,9 @@ async def get_analysis(job_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch analysis {job_id}: {str(e)}")
         # tempfile.TemporaryDirectory() automatically handles cleanup of ALL files when 'with' block exits
+
+# Final Catch-all for Static Assets (JS, CSS, images)
+app.mount("/", StaticFiles(directory=static_dir), name="static")
 
 if __name__ == "__main__":
     import uvicorn

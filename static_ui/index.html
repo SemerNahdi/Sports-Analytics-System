@@ -58,6 +58,7 @@
             margin-bottom: 8px;
             background: var(--gradient);
             -webkit-background-clip: text;
+            background-clip: text;
             -webkit-text-fill-color: transparent;
             text-transform: uppercase;
             letter-spacing: 2px;
@@ -369,41 +370,12 @@
                 }
 
                 // Success!
-                loadingMessage.style.display = 'none';
-                resultContent.style.display = 'block';
+                loadingMessage.innerText = 'Analysis Complete! Redirecting to dashboard...';
                 
-                const addResult = (label, url) => {
-                    if (!url) return;
-                    const item = document.createElement('div');
-                    item.className = 'result-item';
-                    item.innerHTML = `
-                        <div>
-                            <span class="badge">${label.split(' ')[0]}</span>
-                            <span style="margin-left: 10px; font-size: 0.85rem; color: #EEE;">${label}</span>
-                        </div>
-                        <a href="${url}" target="_blank">OPEN</a>
-                    `;
-                    resultsList.appendChild(item);
-                };
-
-                // Video
-                addResult('Analysis Video', data.results.annotated_video);
-                
-                // Data files
-                if (data.results.data_files) {
-                    Object.entries(data.results.data_files).forEach(([name, url]) => {
-                        addResult(`Data: ${name}`, url);
-                    });
-                }
-
-                // Plots (Filtering for PNG as it is widely used)
-                if (data.results.analytical_plots) {
-                    Object.entries(data.results.analytical_plots).forEach(([name, url]) => {
-                        if (name.endsWith('.png')) {
-                            addResult(`Plot: ${name}`, url);
-                        }
-                    });
-                }
+                // Redirect to dashboard with the job ID
+                setTimeout(() => {
+                    window.location.href = `/dashboard.html?job_id=${data.job_id}`;
+                }, 1000);
 
             } catch (err) {
                 loadingMessage.style.display = 'none';

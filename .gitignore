@@ -77,7 +77,9 @@ Input/
 *.webm
 
 # Output Videos (Generated annotated videos)
-# Output/
+Output/
+ffmpeg-8.1/
+white_attack_Sports2D/
 # output/
 # output_annotated.mp4
 *.avi

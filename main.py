@@ -186,8 +186,7 @@ def run_full_analysis_job(
             "id": job_id,
             "player_id": player_id,
             "status": "processing",
-            "session_tags": session_tags,
-            "created_at": "now()"
+            "session_tags": session_tags
         }).execute()
     except Exception as e:
         print(f"[JOB {job_id[:8]}] Warning: Could not create initial DB record: {e}")

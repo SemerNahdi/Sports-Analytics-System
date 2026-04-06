@@ -350,7 +350,21 @@
         async function checkStatus(jobId) {
             try {
                 const response = await fetch(`/analyses/${jobId}`);
-                if (!response.ok) return;
+                
+                // If it's a 404, the background worker just hasn't created the row yet
+                if (response.status === 404) return;
+                
+                // If the query itself failed (the 500 error you see)
+                if (!response.ok) {
+                    const errDetail = await response.json();
+                    clearInterval(pollInterval);
+                    alert(`Supabase Error: ${errDetail.detail || errDetail.message}`);
+                    loadingMessage.style.display = 'none';
+                    errorMessage.style.display = 'block';
+                    errorText.innerText = "Check the alert message above.";
+                    submitBtn.disabled = false;
+                    return;
+                }
                 
                 const data = await response.json();
                 

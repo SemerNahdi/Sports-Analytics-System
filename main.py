@@ -388,12 +388,29 @@ async def get_latest_analysis():
 async def get_analysis(job_id: str):
     """Fetch detail for a specific analysis job."""
     try:
-        response = supabase.table("analyses").select("*").eq("id", job_id).execute()
-        if not response.data:
-            raise HTTPException(status_code=404, detail="Analysis not found.")
-        return response.data[0]
+        # Standard Supabase query
+        res = supabase.table("analyses").select("*").eq("id", job_id).execute()
+        
+        # If the query itself succeeds but returns no data, it's a 404
+        if not res.data:
+            return JSONResponse(
+                status_code=404,
+                content={"status": "error", "message": f"Job {job_id} not found in database."}
+            )
+        
+        return res.data[0]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch analysis {job_id}: {str(e)}")
+        # Log to server console
+        print(f"[Supabase DEBUG] Error fetching {job_id}: {str(e)}")
+        # Return the error to the user so they can read it in the browser console
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error", 
+                "message": "Database query failed", 
+                "detail": str(e)
+            }
+        )
         # tempfile.TemporaryDirectory() automatically handles cleanup of ALL files when 'with' block exits
 
 # Final Catch-all for Static Assets (JS, CSS, images)

@@ -323,28 +323,36 @@ async def analyze_video(
     job_id = str(uuid.uuid4())
     print(f"\n[JOB {job_id[:8]}] Attempting to initialize job record...")
 
-    # --- CRITICAL: FAST DATABASE VERIFICATION ---
-    # We try to create the record NOW. If this fails (e.g. missing 'status' column), 
-    # we return an error to the user IMMEDIATELY instead of a 404 loop later.
-    try:
-        supabase.table("analyses").insert({
-            "id": job_id,
-            "player_id": player_id,
-            "status": "processing",
-            "session_tags": session_tags
-        }).execute()
-        print(f"[JOB {job_id[:8]}] DB record initialized.")
-    except Exception as e:
-        print(f"[JOB {job_id[:8]}] DB Initialization FAILED: {str(e)}")
-        # If this fails, it's usually because the Supabase table doesn't have the new 'status' column.
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": "Could not initialize analysis in your database. Please ensure your Supabase 'analyses' table has a 'status' column.",
-                "detail": str(e)
-            }
-        )
+        # --- CRITICAL: FAST DATABASE VERIFICATION ---
+        # We try to create the record NOW. If this fails (e.g. missing 'status' column), 
+        # we return an error to the user IMMEDIATELY instead of a 404 loop later.
+        try:
+            supabase.table("analyses").insert({
+                "id": job_id,
+                "player_id": player_id,
+                "status": "processing",
+                "session_tags": session_tags
+            }).execute()
+            print(f"[JOB {job_id[:8]}] DB record initialized.")
+        except Exception as e:
+            error_str = str(e)
+            print(f"[JOB {job_id[:8]}] DB Initialization FAILED: {error_str}")
+            
+            # If the error is 'PGRST204', we give the specific fix
+            if "PGRST204" in error_str or "status" in error_str.lower():
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "status": "error",
+                        "message": "SCHEMA ERROR: Your Supabase 'analyses' table is missing the 'status' column.",
+                        "detail": "Please go to Suapbase SQL Editor and run: ALTER TABLE public.analyses ADD COLUMN status TEXT DEFAULT 'processing';"
+                    }
+                )
+            
+            return JSONResponse(
+                status_code=500,
+                content={"status": "error", "message": "Database Error", "detail": error_str}
+            )
 
     # Save a temporary copy of the file for the background worker
     temp_dir_base = tempfile.gettempdir()

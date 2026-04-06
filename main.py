@@ -164,7 +164,7 @@ async def dashboard():
 @app.get("/health")
 async def health():
     """Fast health check for Render to detect the open port instantly."""
-    return {"status": "ok", "service": "Juventus Sports Analytics"}
+    return {"status": "ok", "service": "Mitus AI Sports Analytics System"}
 
 @app.post("/analyze")
 async def analyze_video(
@@ -173,7 +173,7 @@ async def analyze_video(
     yolo_size: str = "m",
     player_height: float = 1.75,
     mass_kg: float = 75.0,
-    session_tags: str = "juventus-match",
+    session_tags: str = "performance-match",
     run_sports2d: bool = False
 ):
     """
@@ -267,7 +267,7 @@ async def analyze_video(
             
             # --- VIDEO OPTIMIZATION (No FFmpeg needed - Cloudinary handles it!) ---
             # We upload the original OpenCV output to Cloudinary, which will auto-transcode it
-            video_url = upload_video_to_cloudinary(output_video_path, f"juventus_analytics_{job_id}")
+            video_url = upload_video_to_cloudinary(output_video_path, f"mitus_ai_analytics_{job_id}")
             
             # If Cloudinary upload fails, try the fallback (will likely have codec issues but better than nothing)
             if not video_url:
@@ -370,5 +370,5 @@ if __name__ == "__main__":
     import uvicorn
     # Get port from environment or default to 8000
     port = int(os.environ.get("PORT", 8000))
-    print(f"Starting Juventus Sports Analytics API on port {port}...")
+    print(f"Starting Mitus AI Sports Analytics API on port {port}...")
     uvicorn.run(app, host="0.0.0.0", port=port)

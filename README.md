@@ -1,161 +1,116 @@
-# Juventus Sports Analytics System
+# Mitus AI Sports Analytics System (v6)
 
-A high-performance biomechanical analysis tool designed for single-player tracking and movement metrics extraction. This system leverages computer vision and pose estimation to provide detailed insights into athletic performance, gait symmetry, and injury risk.
-
----
-
-## Core Architecture
-
-The system follows a modular pipeline designed for precision and reliability:
-
-1.  **Pre-scan Phase**:
-    Analyzes the entire video to identify the most persistent player ID, ensuring the correct subject is tracked even in crowded scenes.
-2.  **Tracking & Verification**:
-    Utilizes a MIL (Multiple Instance Learning) tracker combined with MOG2 background subtraction for robust player localization and blob verification.
-3.  **Pose Estimation**:
-    Integrates MediaPipe Pose to extract 3D-equivalent keypoints for 18 distinct joints, including head, neck, hips, knees, and ankles.
-4.  **Signal Processing**:
-    Implements Kalman filtering for joint coordinate smoothing and Savitzky-Golay filters for derived metrics like velocity and acceleration.
-5.  **Metrics Extraction**:
-    Calculates biomechanical data including speed, cadence, stride length, joint angles, and valgus/varus stress.
-6.  **Risk Assessment**:
-    Analyzes gait symmetry and joint stress to generate a composite injury risk score.
+An advanced, high-performance biomechanical analysis platform designed for precise movement metrics extraction, injury risk assessment, and musculoskeletal modeling. The system integrates state-of-the-art computer vision (YOLOv11), professional kinematics (Sports2D), and cloud-native infrastructure to provide clinical-grade insights into athletic performance.
 
 ---
 
-## Features
+## 🚀 Core Capabilities
 
-- **Automated Player Selection**: Smart detection of the primary subject based on visibility duration.
-- **Interactive Tracking**: Option to manually pick the player to track by clicking in the video frame.
-- **Biomechanical Metrics**:
-  - Real-time speed and acceleration tracking.
-  - Gait analysis (cadence, stride length, step time).
-  - Joint angle monitoring (knee flexion/extension, valgus stress).
-- **Risk Scoring**: Composite analysis of movement patterns to identify potential injury risks.
-- **Annotated Visualization**: Generates a high-quality video with overlaid skeletal tracking and live metrics dashboard.
-- **Data Export**: Comprehensive data output in JSON and CSV formats for further research and longitudinal analysis.
+### 1. Advanced Machine Learning
+- **Pose Estimation**: Powered by **YOLOv11-Pose** (Nano to X-Large models) for robust keypoint tracking in 2D.
+- **Robust Tracking**: Custom **ByteTracker** implementation with Kalman filtering and MOG2 background subtraction for consistent subject lock across scene cuts and occlusions.
+- **Scene Intelligence**: Automated scene change detection and target re-acquisition.
+
+### 2. Professional Biomechanics (Sports2D & OpenSim)
+- **Kinematics Pipeline**: Optional integration with **Sports2D** for authoritative joint angle calculations and automated side-view analysis.
+- **OpenSim Compatibility**: Generates **.TRC** (marker trajectories) and **.MOT** (joint angles) files ready for Inverse Kinematics (IK) in OpenSim.
+- **IK & Augmentation**: Support for LSTM-based marker augmentation to enhance musculoskeletal modeling precision.
+
+### 3. Comprehensive Analytics Suite
+- **Gait Analysis**: Cadence, stride length, step width, double support percentage, and foot progression angles.
+- **Joint Monitoring**: Knee flexion/extension, hip flexion, and clinical Valgus/Varus (knee collapse) tracking.
+- **Trunk & Posture**: Sagittal/Lateral trunk lean, pelvic rotation, and arm swing asymmetry.
+- **Performance & Health**: Real-time speed, acceleration, energy expenditure (kcal/hr), fatigue indexing, and multi-factor injury risk scoring.
 
 ---
 
-## Prerequisites
+## 🏗️ Architecture & Stack
 
-- Python 3.8 or higher
-- FFmpeg (for video encoding)
+- **Backend**: FastAPI (Python 3.8+) for high-performance RESTful operations.
+- **Computer Vision**: OpenCV, Ultralytics (YOLO), Sports2D, Pose2Sim.
+- **Data Engineering**: NumPy, Pandas, SciPy for signal processing (Kalman, Savitzky-Golay).
+- **Cloud Infrastructure**:
+  - **Supabase**: Persistent storage for analysis metadata, JSON/CSV reports, and analytical plots.
+  - **Cloudinary**: Optimized video hosting with automatic transcoding (H.264/WebM) and global delivery.
+- **Frontend**: Modern, glassmorphic dashboard (HTML5/Vanilla CSS/JavaScript) with Chart.js for dynamic visualization.
 
-### Dependencies
+---
 
-Install the required Python packages using pip:
+## 🛠️ Getting Started
 
+### Prerequisites
+- **Python 3.9+**
+- **FFmpeg** (must be on system PATH for video re-encoding)
+- **Supabase & Cloudinary Accounts** (if running the API/Cloud mode)
+
+### Installation
 ```bash
+# Clone the repository
+git clone https://github.com/SemerNahdi/Juventus-Sports-Analytics-System.git
+cd "Juventus Sports Analytics System"
+
+# Setup virtual environment
+python -m venv .venv
+source .venv/Scripts/activate  # Windows: .\.venv\Scripts\Activate.ps1
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-Core libraries include:
-
-- `mediapipe`: Pose estimation and keypoint detection.
-- `opencv-python`: Video processing and visualization.
-- `numpy` & `pandas`: Data manipulation and numerical analysis.
-- `scipy` & `scikit-learn`: Signal processing and advanced analytics.
-
 ---
 
-## Environment Setup
+## 📖 Usage Guide
 
-To ensure all dependencies are correctly managed, it is recommended to use the included virtual environment (`venv`).
+### 1. CLI Entry (run_analysis.py)
+The primary tool for local processing and OpenSim research.
 
-### Activating the Environment
-
-| Shell               | Command                        |
-| :------------------ | :----------------------------- |
-| **Bash (Git Bash)** | `source venv/Scripts/activate` |
-| **PowerShell**      | `.\venv\Scripts\Activate.ps1`  |
-| **Command Prompt**  | `.\venv\Scripts\activate`      |
-
-> [!IMPORTANT]
-> When using **Bash** on Windows, you **must** use forward slashes (`/`). Using backslashes (`\`) will result in a "command not found" error.
-
----
-
-## How to Run
-
-The system is executed via `run_analysis.py`.
-
-### Basic Usage
-
-Automatically select and track the most persistent player:
-
+**Basic Analysis (Custom Tracker):**
 ```bash
-python run_analysis.py --video path/to/match.mp4
+python run_analysis.py --video match.mp4 --player 1
 ```
 
-### Interactive Manual Selection
-
-Open a window to click on the specific player you wish to track:
-
+**Clinical Analysis (Sports2D + OpenSim):**
 ```bash
-python run_analysis.py --video path/to/match.mp4 --pick
+# --sports2d: Run the deep kinematics pipeline
+# --pick: Interactively select the subject via mouse click
+# --s2d-ik: Generate OpenSim Inverse Kinematics files
+python run_analysis.py --video march_clip.mp4 --sports2d --pick --s2d-ik
 ```
 
-### Advanced Options
-
-Specify output paths, frames per second, and specific player IDs:
-
+### 2. REST API (main.py)
+Used for deployment (e.g., Render) and integration with the management portal.
 ```bash
-python run_analysis.py --video match.mp4 --output analysis.mp4 --player 10 --fps 30
+python main.py
 ```
+*The API automatically handles file uploads to Supabase and video transcoding via Cloudinary.*
 
-### Arguments
-
-| Argument   | Description                               | Default                       |
-| :--------- | :---------------------------------------- | :---------------------------- |
-| `--video`  | Path to the input video file (Required).  | -                             |
-| `--output` | Path for the annotated output video.      | `Output/output_annotated.mp4` |
-| `--player` | Player jersey/ID label to search for.     | `1`                           |
-| `--pick`   | Enable interactive mouse-click selection. | `False`                       |
-| `--fps`    | Override video FPS.                       | Video Metadata                |
-| `--json`   | Path for JSON metrics export.             | `Output/metrics.json`         |
-| `--csv`    | Path for CSV metrics export.              | `Output/metrics.csv`          |
-
----
-
-## Project Structure
-
-- `run_analysis.py`: Main entry point and CLI handler.
-- `sports_analytics.py`: Core logic, including tracking, pose estimation, and metrics calculation.
-- `Output/`: Default directory for all generated analysis results.
-- `input/`: Recommended directory for source video files.
-
----
-
-## Output Artifacts
-
-Upon completion, the system generates:
-
-- **Annotated Video**: A visual representation of the tracking and biomechanical data.
-- **Metrics JSON**: Full raw data for integration with other software.
-- **Metrics CSV**: Tabular data ready for Excel or Python-based research.
-- **Terminal Summary**: A text report containing aggregate performance statistics.
-
----
-
-## Interactive Dashboard Viewer
-
-The system includes a modern, interactive dashboard for exploring the results.
-
-### 🖥️ 1. Start the Server
-
+### 3. Interactive Dashboard
+Serve the portal and dashboard locally to browse historical results.
 ```bash
 python serve_dashboard.py
 ```
+Visit: [http://localhost:8000](http://localhost:8000)
 
-### 🌍 2. Open in Browser
+---
 
-Once the server is running, visit:
-[http://localhost:8000/dashboard.html](http://localhost:8000/dashboard.html)
+## 📂 Project Structure
 
-### Features:
+- `sports_analytics.py`: The "Engine" — contains tracking, pose logic, and the biomechanics calculator.
+- `run_analysis.py`: CLI wrapper for batch and research processing.
+- `main.py`: Production API with Supabase/Cloudinary middleware.
+- `static_ui/`: Frontend source (Management Portal & Dashboard).
+- `Output/`: standard directory for local results (JSON, CSV, MOT, TRC, MP4).
 
-- **Live Video Playback**: Syncs annotated footage with live metrics.
-- **Biomechanical Trends**: Dynamic charts for rhythm, timing, and knee angles.
-- **Injury Risk Comparison**: Real-time evaluation against professional benchmarks.
-- **Theme Switch**: Light and Dark mode support.
+---
+
+## 📊 Output Artifacts
+Upon completion, the system generates:
+- **Annotated Video**: High-fidelity skeleton overlays and live metric dashboards.
+- **Kinematic Graphs**: Authoritative joint-angle plots (PNG) from Sports2D.
+- **Unified Data**: Comprehensive metrics export in **JSON** and **CSV**.
+- **Musculoskeletal Data**: **.TRC** and **.MOT** files for OpenSim integration.
+- **Clinical Report**: Executive summary of gait symmetry, joint stress, and injury risks.
+
+---
+© 2026 Mitus AI Sports Analytics System. Proprietary Biomechanical Assessment Framework.
+

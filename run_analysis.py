@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Juventus Sports Analytics System — Entry Point  v6
+Mitus AI Sports Analytics System — Entry Point  v6
 ====================================================
 NEW FLOW
 --------
@@ -49,7 +49,7 @@ from sports_analytics import SportsAnalyzer, HAS_SPORTS2D
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Juventus Sports Analytics v6",
+        description="Mitus AI Sports Analytics v6",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 

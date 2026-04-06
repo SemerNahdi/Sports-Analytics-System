@@ -78,7 +78,7 @@ Navigate to your project folder and run the analysis with Inverse Kinematics ena
 
 1.  **Navigate to Project:**
     ```bash
-    cd "C:/Users/semer/Desktop/eSteps/Juventus Sports Analytics System"
+    cd "C:/Users/semer/Desktop/eSteps/Mitus AI Sports Analytics System"
     ```
     *(Note: Use forward slashes `/` or escape backslashes `\\` in Git Bash)*
 

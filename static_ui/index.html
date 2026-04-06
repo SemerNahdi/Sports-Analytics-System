@@ -283,31 +283,18 @@
             </div>
 
             <div class="form-group">
-                <label for="yolo_size">Tracker Precision</label>
+                <label for="yolo_size">AI Detection Precision</label>
                 <select id="yolo_size" name="yolo_size">
-                    <option value="n">Lite</option>
-                    <option value="s">Standard</option>
-                    <option value="m" selected>Advanced</option>
-                    <option value="l">High-Def</option>
-                    <option value="x">Clinical</option>
+                    <option value="n">Lite (Fastest)</option>
+                    <option value="s" selected>Standard (Recommended)</option>
+                    <option value="m">Advanced (Higher Precision)</option>
+                    <option value="l">Elite (Maximum Precision)</option>
                 </select>
             </div>
 
-            <div class="form-group">
-                <label for="player_height">Height (m)</label>
-                <input type="number" id="player_height" name="player_height" value="1.75" step="0.01">
-            </div>
-
-            <div class="form-group">
-                <label for="mass_kg">Mass (kg)</label>
-                <input type="number" id="mass_kg" name="mass_kg" value="75" step="1">
-            </div>
-
-            <div class="form-group">
-                <label class="checkbox-group">
-                    <input type="checkbox" id="run_sports2d" name="run_sports2d">
-                    Include Deep Pipeline (Extended)
-                </label>
+            <div class="form-group checkbox-group" style="display: flex; align-items: center; gap: 10px; margin-top: 20px;">
+                <input type="checkbox" id="run_sports2d" name="run_sports2d" style="width: auto; height: 20px; cursor: pointer;">
+                <label for="run_sports2d" style="margin: 0; font-size: 0.8rem; cursor: pointer;">Enable Deep Biomechanics Pipeline (Sports2D)</label>
             </div>
 
             <button type="submit" id="submitBtn">Process Analysis</button>
@@ -472,22 +459,30 @@
             }
         }
 
+        let pollAttempts = 0;
+        let startTime = null;
+
         // --- PIPELINE STEP 2: POLL STATUS ---
         async function pollStatus(jobId) {
             try {
+                pollAttempts++;
+                const elapsed = Math.round((Date.now() - startTime) / 1000);
+                loaderText.innerText = `Analyzing Biomechanics... (${elapsed}s elapsed) -- Working on AI frames...`;
+
                 const response = await fetch(`/analyses/${jobId}`);
                 
-                // If it's a 404, just wait
+                // If it's a 404, it might be a slow DB primary-key replication
                 if (response.status === 404) {
-                    console.log("Record not found yet, retrying...");
+                    if (pollAttempts > 15) { // 45 seconds of 404 is too much
+                         throw new Error("Database sync timeout. The record was not found after 45 seconds.");
+                    }
                     return;
                 }
 
-                // Verify the response is JSON before parsing
                 const contentType = response.headers.get("content-type");
                 if (!response.ok || !contentType || !contentType.includes("application/json")) {
-                    console.warn("Received a non-JSON response from server. This is typical during a cold start or DB delay.");
-                    return; // Fail silently and try again in 3s
+                    console.warn("Retrying after non-JSON response...");
+                    return; 
                 }
                 
                 const data = await response.json();
@@ -497,17 +492,21 @@
                     renderDashboard(data);
                 } else if (data.status === 'failed') {
                     clearInterval(pollInterval);
-                    throw new Error(data.error || "Analysis failed on server");
-                } else {
-                    loaderText.innerText = "Analyzing Biomechanics... This takes 1-3 minutes.";
+                    throw new Error(data.error || "AI Engine stopped during analysis. Try a shorter video or 'Lite' precision.");
                 }
             } catch (err) {
                 console.error("Polling Error:", err);
-                // We keep polling even on error unless it's a 'failed' status
+                // Only stop polling for real fatal errors
+                if (err.message.includes("timeout") || err.message.includes("AI Engine")) {
+                    clearInterval(pollInterval);
+                    loadingMessage.style.display = 'none';
+                    errorMessage.style.display = 'block';
+                    errorText.innerText = err.message;
+                    submitBtn.disabled = false;
+                }
             }
         }
 
-        // --- PIPELINE STEP 1: START UPLOAD ---
         form.onsubmit = async (e) => {
             e.preventDefault();
             
@@ -523,6 +522,8 @@
             loadingMessage.style.display = 'block';
             loaderText.innerText = 'Uploading highly-compressed video stream...';
             errorMessage.style.display = 'none';
+            startTime = Date.now();
+            pollAttempts = 0;
 
             const formData = new FormData(form);
             
@@ -540,7 +541,7 @@
                     if (pollInterval) clearInterval(pollInterval);
                     pollInterval = setInterval(() => pollStatus(data.job_id), 3000);
                 } else {
-                    throw new Error(data.detail || data.message || 'Analysis failed to start');
+                    throw new Error(data.detail || data.message || 'Server rejected the analysis. Check your Supabase column named "status".');
                 }
 
             } catch (err) {

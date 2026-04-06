@@ -204,8 +204,11 @@ def run_full_analysis_job(
             supabase.table("analyses").update({"status": "failed", "error": str(e)}).eq("id", job_id).execute()
             return
 
-        try:
             # 3. Initialize and run SportsAnalyzer
+            print(f"[JOB {job_id[:8]}] Loading AI Model ({yolo_size})...")
+            import gc
+            gc.collect() # Force cleanup before loading heavy model
+
             analyzer = SportsAnalyzer(
                 video_path=input_path,
                 output_video_path=output_video_path,
@@ -215,17 +218,21 @@ def run_full_analysis_job(
                 pick=False 
             )
             
+            print(f"[JOB {job_id[:8]}] Frame detection started...")
             summary = analyzer.process_video()
-            
+            print(f"[JOB {job_id[:8]}] Tracking complete. {len(analyzer.frame_metrics)} frames processed.")
+            gc.collect()
+
             # 4. Run optional Sports2D pipeline
             if run_sports2d:
-                print(f"[JOB {job_id[:8]}] Running Sports2D pipeline...")
+                print(f"[JOB {job_id[:8]}] Running Sports2D clinical pipeline...")
                 s2d_dir = os.path.join(temp_dir, "Sports2D")
                 analyzer.run_sports2d(
                     result_dir=s2d_dir,
                     mode="balanced",
                     participant_mass_kg=mass_kg
                 )
+                gc.collect()
 
             # 5. Export unified data (JSON, CSV, TRC, MOT)
             json_out = os.path.join(data_dir, "analytics_unified.json")

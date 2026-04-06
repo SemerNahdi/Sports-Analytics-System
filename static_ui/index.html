@@ -476,11 +476,18 @@
         async function pollStatus(jobId) {
             try {
                 const response = await fetch(`/analyses/${jobId}`);
-                if (response.status === 404) return; // Wait for it to be created
                 
-                if (!response.ok) {
-                    const err = await response.json();
-                    throw new Error(err.detail || "Database fetch failed");
+                // If it's a 404, just wait
+                if (response.status === 404) {
+                    console.log("Record not found yet, retrying...");
+                    return;
+                }
+
+                // Verify the response is JSON before parsing
+                const contentType = response.headers.get("content-type");
+                if (!response.ok || !contentType || !contentType.includes("application/json")) {
+                    console.warn("Received a non-JSON response from server. This is typical during a cold start or DB delay.");
+                    return; // Fail silently and try again in 3s
                 }
                 
                 const data = await response.json();
@@ -496,11 +503,7 @@
                 }
             } catch (err) {
                 console.error("Polling Error:", err);
-                clearInterval(pollInterval);
-                loadingMessage.style.display = 'none';
-                errorMessage.style.display = 'block';
-                errorText.innerText = err.message;
-                submitBtn.disabled = false;
+                // We keep polling even on error unless it's a 'failed' status
             }
         }
 

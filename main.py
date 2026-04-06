@@ -180,17 +180,7 @@ def run_full_analysis_job(
     """
     The heavy-lifting background task that runs the AI analysis and uploads results.
     """
-    # Create the record in Supabase immediately so the UI can see it
-    try:
-        supabase.table("analyses").insert({
-            "id": job_id,
-            "player_id": player_id,
-            "status": "processing",
-            "session_tags": session_tags
-        }).execute()
-    except Exception as e:
-        print(f"[JOB {job_id[:8]}] Warning: Could not create initial DB record: {e}")
-
+    # Record is now initialized in the endpoint.
     # Lazy import to prevent blocking startup during port binding
     from sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D
 
@@ -323,16 +313,40 @@ async def analyze_video(
 ):
     """
     Asynchronous analysis endpoint:
-    1. Returns '202 Accepted' with job_id immediately (avoids Render 502 timeout).
-    2. Processes AI analysis in the BackgroundTask pool.
+    1. Verifies the database connection and schema first.
+    2. Returns '202 Accepted' with job_id immediately (avoids Render 502 timeout).
+    3. Processes AI analysis in the BackgroundTask pool.
     """
     if not file.content_type.startswith("video/"):
         raise HTTPException(status_code=400, detail="File must be a video.")
 
     job_id = str(uuid.uuid4())
-    print(f"\n[JOB {job_id[:8]}] Queueing background analysis for player #{player_id}")
+    print(f"\n[JOB {job_id[:8]}] Attempting to initialize job record...")
 
-    # Create a temporary landing spot for the file
+    # --- CRITICAL: FAST DATABASE VERIFICATION ---
+    # We try to create the record NOW. If this fails (e.g. missing 'status' column), 
+    # we return an error to the user IMMEDIATELY instead of a 404 loop later.
+    try:
+        supabase.table("analyses").insert({
+            "id": job_id,
+            "player_id": player_id,
+            "status": "processing",
+            "session_tags": session_tags
+        }).execute()
+        print(f"[JOB {job_id[:8]}] DB record initialized.")
+    except Exception as e:
+        print(f"[JOB {job_id[:8]}] DB Initialization FAILED: {str(e)}")
+        # If this fails, it's usually because the Supabase table doesn't have the new 'status' column.
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": "Could not initialize analysis in your database. Please ensure your Supabase 'analyses' table has a 'status' column.",
+                "detail": str(e)
+            }
+        )
+
+    # Save a temporary copy of the file for the background worker
     temp_dir_base = tempfile.gettempdir()
     os.makedirs(os.path.join(temp_dir_base, "mitus_uploads"), exist_ok=True)
     temp_input_path = os.path.join(temp_dir_base, "mitus_uploads", f"{job_id}_{file.filename}")
@@ -359,7 +373,7 @@ async def analyze_video(
         content={
             "status": "processing",
             "job_id": job_id,
-            "message": "Analysis started in background. Polling recommended."
+            "message": "Analysis queued successfully."
         }
     )
 

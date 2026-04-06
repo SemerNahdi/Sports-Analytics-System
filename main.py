@@ -166,38 +166,39 @@ async def health():
     """Fast health check for Render to detect the open port instantly."""
     return {"status": "ok", "service": "Mitus AI Sports Analytics System"}
 
-@app.post("/analyze")
-async def analyze_video(
-    file: UploadFile = File(...),
-    player_id: int = 1,
-    yolo_size: str = "m",
-    player_height: float = 1.75,
-    mass_kg: float = 75.0,
-    session_tags: str = "performance-match",
-    run_sports2d: bool = False
+def run_full_analysis_job(
+    job_id: str,
+    temp_input_path: str,
+    player_id: int,
+    yolo_size: str,
+    player_height: float,
+    mass_kg: float,
+    session_tags: str,
+    run_sports2d: bool,
+    original_filename: str
 ):
     """
-    Core analysis endpoint:
-    1. Receives video file
-    2. Runs full tracking & biomechanics
-    3. Generates plots and reports
-    4. Uploads EVERYTHING to Supabase
-    5. Cleans up all local temporary storage
+    The heavy-lifting background task that runs the AI analysis and uploads results.
     """
-    if not file.content_type.startswith("video/"):
-        raise HTTPException(status_code=400, detail="File must be a video.")
+    # Create the record in Supabase immediately so the UI can see it
+    try:
+        supabase.table("analyses").insert({
+            "id": job_id,
+            "player_id": player_id,
+            "status": "processing",
+            "session_tags": session_tags,
+            "created_at": "now()"
+        }).execute()
+    except Exception as e:
+        print(f"[JOB {job_id[:8]}] Warning: Could not create initial DB record: {e}")
 
     # Lazy import to prevent blocking startup during port binding
     from sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D
 
-    # Use a unique job ID
-    job_id = str(uuid.uuid4())
-    print(f"\n[JOB {job_id[:8]}] Starting analysis for player #{player_id}")
-
     # Use a temporary directory for processing - ensures NO local leftover files
     with tempfile.TemporaryDirectory() as temp_dir:
-        # 1. Setup paths
-        input_path = os.path.join(temp_dir, "input_" + file.filename)
+        # Setup final paths
+        input_path = os.path.join(temp_dir, "input_" + original_filename)
         output_video_name = "output_annotated.mp4"
         output_video_path = os.path.join(temp_dir, output_video_name)
         
@@ -206,13 +207,16 @@ async def analyze_video(
         os.makedirs(results_dir, exist_ok=True)
         os.makedirs(data_dir, exist_ok=True)
 
-        # 2. Save uploaded file to temp directory
-        with open(input_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # Move the uploaded file from its temp landing spot to our working dir
+        try:
+            shutil.move(temp_input_path, input_path)
+        except Exception as e:
+            print(f"[JOB {job_id[:8]}] File move error: {e}")
+            supabase.table("analyses").update({"status": "failed", "error": str(e)}).eq("id", job_id).execute()
+            return
 
         try:
             # 3. Initialize and run SportsAnalyzer
-            # Note: pick=False for API (no interactive UI)
             analyzer = SportsAnalyzer(
                 video_path=input_path,
                 output_video_path=output_video_path,
@@ -262,74 +266,103 @@ async def analyze_video(
 
             # 7. Upload All Assets (Video to Cloudinary, Others to Supabase)
             print(f"[JOB {job_id[:8]}] Uploading results...")
-            
             asset_prefix = f"jobs/{job_id}"
             
-            # --- VIDEO OPTIMIZATION (No FFmpeg needed - Cloudinary handles it!) ---
-            # We upload the original OpenCV output to Cloudinary, which will auto-transcode it
+            # VIDEO OPTIMIZATION
             video_url = upload_video_to_cloudinary(output_video_path, f"mitus_ai_analytics_{job_id}")
-            
-            # If Cloudinary upload fails, try the fallback (will likely have codec issues but better than nothing)
             if not video_url:
-                print(f"[JOB {job_id[:8]}] Cloudinary failed. Falling back to Supabase.")
+                print(f"[JOB {job_id[:8]}] Cloudinary fallback used.")
                 video_url = upload_file_to_supabase(output_video_path, f"{asset_prefix}/{output_video_name}")
 
-
-            
-            # Upload data files
+            # Upload data files and plots
             data_urls = upload_directory_to_supabase(data_dir, f"{asset_prefix}/data")
-            
-            # Upload plots
             plot_urls = upload_directory_to_supabase(results_dir, f"{asset_prefix}/plots")
 
-            # Final response payload
-            results = {
+            # Final update to Supabase record
+            full_summary = {
+                "player_summary": asdict(summary),
+                "biomechanics_summary": analyzer.bio_engine.summary_dict() if analyzer.bio_engine else {},
+                "frame_metrics": unified_frames
+            }
+
+            supabase.table("analyses").update({
                 "status": "success",
-                "job_id": job_id,
-                "player_id": player_id,
+                "video_url": video_url,
+                "summary": full_summary,
+                "data_urls": data_urls,
+                "plot_urls": plot_urls,
                 "player_height": player_height,
                 "mass_kg": mass_kg,
                 "yolo_size": yolo_size,
-                "run_sports2d": run_sports2d,
-                "session_tags": session_tags,
-                "results": {
-                    "annotated_video": video_url,
-                    "data_files": data_urls,
-                    "analytical_plots": plot_urls
-                },
-                "summary": {
-                    "player_summary": asdict(summary),
-                    "biomechanics_summary": analyzer.bio_engine.summary_dict() if analyzer.bio_engine else {},
-                    "frame_metrics": unified_frames # Use the version with bio_ fields
-                }
-            }
+                "run_sports2d": run_sports2d
+            }).eq("id", job_id).execute()
 
-            # 8. Store results in Supabase Database Table 'analyses'
-            # (Assumes table 'analyses' exists with columns matching the data structure)
-            try:
-                supabase.table("analyses").insert({
-                    "id": job_id,
-                    "player_id": player_id,
-                    "player_height": player_height,
-                    "mass_kg": mass_kg,
-                    "yolo_size": yolo_size,
-                    "run_sports2d": run_sports2d,
-                    "session_tags": session_tags,
-                    "video_url": video_url,
-                    "summary": results["summary"],
-                    "data_urls": data_urls,
-                    "plot_urls": plot_urls
-                }).execute()
-            except Exception as e:
-                print(f"[Supabase DB Error] Could not insert record: {e}")
-                # We don't fail the whole request because assets are already in storage
-
-            return JSONResponse(content=results)
+            print(f"[JOB {job_id[:8]}] Successfully completed.")
 
         except Exception as e:
             import traceback
             traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+            try:
+                supabase.table("analyses").update({
+                    "status": "failed",
+                    "error": str(e)
+                }).eq("id", job_id).execute()
+            except:
+                pass
+            print(f"[JOB {job_id[:8]}] Failed with error: {e}")
+
+@app.post("/analyze")
+async def analyze_video(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    player_id: int = 1,
+    yolo_size: str = "m",
+    player_height: float = 1.75,
+    mass_kg: float = 75.0,
+    session_tags: str = "performance-match",
+    run_sports2d: bool = False
+):
+    """
+    Asynchronous analysis endpoint:
+    1. Returns '202 Accepted' with job_id immediately (avoids Render 502 timeout).
+    2. Processes AI analysis in the BackgroundTask pool.
+    """
+    if not file.content_type.startswith("video/"):
+        raise HTTPException(status_code=400, detail="File must be a video.")
+
+    job_id = str(uuid.uuid4())
+    print(f"\n[JOB {job_id[:8]}] Queueing background analysis for player #{player_id}")
+
+    # Create a temporary landing spot for the file
+    temp_dir_base = tempfile.gettempdir()
+    os.makedirs(os.path.join(temp_dir_base, "mitus_uploads"), exist_ok=True)
+    temp_input_path = os.path.join(temp_dir_base, "mitus_uploads", f"{job_id}_{file.filename}")
+
+    with open(temp_input_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # Queue the heavy work
+    background_tasks.add_task(
+        run_full_analysis_job,
+        job_id,
+        temp_input_path,
+        player_id,
+        yolo_size,
+        player_height,
+        mass_kg,
+        session_tags,
+        run_sports2d,
+        file.filename
+    )
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": "processing",
+            "job_id": job_id,
+            "message": "Analysis started in background. Polling recommended."
+        }
+    )
 
 @app.get("/analyses")
 async def list_analyses(limit: int = 20):

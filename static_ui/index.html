@@ -339,10 +339,41 @@
         const submitBtn = document.getElementById('submitBtn');
         const statusDiv = document.getElementById('status');
         const loadingMessage = document.getElementById('loadingMessage');
+        const loaderText = loadingMessage.querySelector('div:last-child');
         const resultContent = document.getElementById('resultContent');
         const resultsList = document.getElementById('resultsList');
         const errorMessage = document.getElementById('errorMessage');
         const errorText = document.getElementById('errorText');
+
+        let pollInterval = null;
+
+        async function checkStatus(jobId) {
+            try {
+                const response = await fetch(`/analyses/${jobId}`);
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    clearInterval(pollInterval);
+                    loaderText.innerText = 'Analysis Complete! Redirecting to dashboard...';
+                    setTimeout(() => {
+                        window.location.href = `/dashboard.html?job_id=${jobId}`;
+                    }, 1000);
+                } else if (data.status === 'failed') {
+                    clearInterval(pollInterval);
+                    loadingMessage.style.display = 'none';
+                    errorMessage.style.display = 'block';
+                    errorText.innerText = data.error || 'The analysis task failed on the server.';
+                    submitBtn.disabled = false;
+                } else {
+                    // Still processing
+                    loaderText.innerText = 'Processing AI Models... This usually takes 1-3 minutes. Please stay on this page.';
+                }
+            } catch (err) {
+                console.error("Polling error:", err);
+            }
+        }
 
         form.onsubmit = async (e) => {
             e.preventDefault();
@@ -351,6 +382,7 @@
             submitBtn.disabled = true;
             statusDiv.style.display = 'block';
             loadingMessage.style.display = 'block';
+            loaderText.innerText = 'Uploading video and starting analysis...';
             resultContent.style.display = 'none';
             errorMessage.style.display = 'none';
             resultsList.innerHTML = '';
@@ -365,23 +397,21 @@
 
                 const data = await response.json();
 
-                if (!response.ok) {
-                    throw new Error(data.detail || 'Analysis failed');
+                if (response.status === 202 || response.ok) {
+                    // Background job started
+                    loaderText.innerText = 'Video uploaded! Analyzing biomechanics...';
+                    
+                    // Start polling
+                    if (pollInterval) clearInterval(pollInterval);
+                    pollInterval = setInterval(() => checkStatus(data.job_id), 5000);
+                } else {
+                    throw new Error(data.detail || 'Analysis failed to start');
                 }
-
-                // Success!
-                loadingMessage.innerText = 'Analysis Complete! Redirecting to dashboard...';
-                
-                // Redirect to dashboard with the job ID
-                setTimeout(() => {
-                    window.location.href = `/dashboard.html?job_id=${data.job_id}`;
-                }, 1000);
 
             } catch (err) {
                 loadingMessage.style.display = 'none';
                 errorMessage.style.display = 'block';
                 errorText.innerText = err.message;
-            } finally {
                 submitBtn.disabled = false;
             }
         };

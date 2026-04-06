@@ -27,7 +27,7 @@ def start_server():
         httpd.serve_forever()
 
 if __name__ == '__main__':
-    print("Starting Juventus Analytics Dashboard Server...")
+    print("Starting Mitus AI Sports Analytics Dashboard Server...")
     # Change to current dir
     os.chdir(DIRECTORY)
     

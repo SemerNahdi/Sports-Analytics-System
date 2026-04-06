@@ -385,32 +385,43 @@
         let pollInterval = null;
         let speedChart = null;
         let jointChart = null;
+        let pollAttempts = 0;
+        let startTime = null;
+        let lastLogIndex = 0; // Tracking for telemetry
+
+        // --- TELEMETRY: PIPE BACKEND LOGS TO CONSOLE ---
+        function updateTelemetry(logs) {
+            if (!logs || !Array.isArray(logs)) return;
+            
+            // Print only NEW logs to console
+            for (let i = lastLogIndex; i < logs.length; i++) {
+                console.log(`%c[BACKEND] %c${logs[i]}`, 'color: #00f2fe; font-weight: bold;', 'color: #FFF;');
+                // Also update the UI subtext
+                loaderText.innerText = logs[i].split(' - ')[1] || logs[i];
+                lastLogIndex++;
+            }
+        }
 
         // --- PIPELINE STEP 3: RENDER RESULTS ---
         function renderDashboard(data) {
-            console.log("Rendering Dashboard with data:", data);
+            console.log("%c[SYSTEM] Analysis Successful. Rendering Dashboard...", 'color: #4facfe; font-weight: bold;');
             
-            // Hide loading, show dashboard
             loadingMessage.style.display = 'none';
-            form.style.display = 'none'; // Hide the form entirely
+            form.style.display = 'none'; 
             dashboardSection.style.display = 'block';
 
-            // 1. Update Video
             const video = document.getElementById('resultVideo');
             video.src = data.video_url;
             video.load();
 
-            // 2. Update KPIs
             const summary = data.summary.player_summary;
             document.getElementById('kpiRisk').innerText = `${Math.round(summary.peak_risk_score)}/100`;
             document.getElementById('kpiSymmetry').innerText = `${Math.round(summary.gait_symmetry_pct)}%`;
             document.getElementById('kpiSpeed').innerText = `${summary.max_speed.toFixed(1)} m/s`;
 
-            // 3. Update Charts
             const frames = data.summary.frame_metrics;
             const labels = frames.map(f => (f.timestamp).toFixed(1) + 's');
             
-            // Speed Chart
             const speedCtx = document.getElementById('speedChart').getContext('2d');
             if(speedChart) speedChart.destroy();
             speedChart = new Chart(speedCtx, {
@@ -429,7 +440,6 @@
                 options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { grid: { color: '#222' } }, x: { display: false } } }
             });
 
-            // Joint Chart
             const jointCtx = document.getElementById('jointChart').getContext('2d');
             if(jointChart) jointChart.destroy();
             jointChart = new Chart(jointCtx, {
@@ -444,7 +454,6 @@
                 options: { responsive: true, scales: { y: { grid: { color: '#222' } }, x: { display: false } } }
             });
 
-            // 4. Update Export Links
             const exportContainer = document.getElementById('exportLinks');
             exportContainer.innerHTML = '';
             if (data.data_urls) {
@@ -453,77 +462,55 @@
                     a.href = url;
                     a.target = "_blank";
                     a.innerText = name.toUpperCase();
-                    a.style = "color: #FFF; text-decoration: none; padding: 10px 15px; background: #111; border: 1px solid #333; border-radius: 6px; font-size: 0.7rem; letter-spacing: 1px;";
+                    a.className = "btn-export";
+                    a.style = "color: #FFF; text-decoration: none; padding: 10px 15px; background: #111; border: 1px solid #333; border-radius: 6px; font-size: 0.7rem; letter-spacing: 1px; transition: 0.3s;";
                     exportContainer.appendChild(a);
                 });
             }
         }
 
-        let pollAttempts = 0;
-        let startTime = null;
-
         // --- PIPELINE STEP 2: POLL STATUS ---
         async function pollStatus(jobId) {
             try {
                 pollAttempts++;
-                const elapsed = Math.round((Date.now() - startTime) / 1000);
-                loaderText.innerText = `Analyzing Biomechanics... (${elapsed}s elapsed) -- Working on AI frames...`;
-
                 const response = await fetch(`/analyses/${jobId}`);
                 
-                // If it's a 404, it might be a slow DB primary-key replication
                 if (response.status === 404) {
-                    if (pollAttempts > 15) { // 45 seconds of 404 is too much
-                         throw new Error("Database sync timeout. The record was not found after 45 seconds.");
-                    }
+                    if (pollAttempts > 20) throw new Error("Database sync timeout.");
                     return;
                 }
 
                 const contentType = response.headers.get("content-type");
-                if (!response.ok || !contentType || !contentType.includes("application/json")) {
-                    console.warn("Retrying after non-JSON response...");
-                    return; 
-                }
+                if (!response.ok || !contentType || !contentType.includes("application/json")) return;
                 
                 const data = await response.json();
                 
+                // --- UPDATE TELEMETRY ---
+                updateTelemetry(data.logs);
+
                 if (data.status === 'success') {
                     clearInterval(pollInterval);
                     renderDashboard(data);
                 } else if (data.status === 'failed') {
                     clearInterval(pollInterval);
-                    throw new Error(data.error || "AI Engine stopped during analysis. Try a shorter video or 'Lite' precision.");
+                    throw new Error(data.error || "AI Engine stopped.");
                 }
             } catch (err) {
                 console.error("Polling Error:", err);
-                // Only stop polling for real fatal errors
-                if (err.message.includes("timeout") || err.message.includes("AI Engine")) {
-                    clearInterval(pollInterval);
-                    loadingMessage.style.display = 'none';
-                    errorMessage.style.display = 'block';
-                    errorText.innerText = err.message;
-                    submitBtn.disabled = false;
-                }
             }
         }
 
         form.onsubmit = async (e) => {
             e.preventDefault();
             
-            const fileInput = document.getElementById('file');
-            if (fileInput.files.length === 0) {
-                alert("Please select a video file first.");
-                return;
-            }
-
-            // UI Reset
             submitBtn.disabled = true;
             statusDiv.style.display = 'block';
             loadingMessage.style.display = 'block';
-            loaderText.innerText = 'Uploading highly-compressed video stream...';
+            loaderText.innerText = 'Uploading video stream...';
             errorMessage.style.display = 'none';
             startTime = Date.now();
             pollAttempts = 0;
+            lastLogIndex = 0;
 
             const formData = new FormData(form);
             
@@ -536,12 +523,11 @@
                 const data = await response.json();
 
                 if (response.status === 202 || response.ok) {
-                    // Start Polling
-                    loaderText.innerText = 'Upload Successful. Initializing AI environment...';
+                    loaderText.innerText = 'Initializing AI Analysis...';
                     if (pollInterval) clearInterval(pollInterval);
-                    pollInterval = setInterval(() => pollStatus(data.job_id), 3000);
+                    pollInterval = setInterval(() => pollStatus(data.job_id), 2500);
                 } else {
-                    throw new Error(data.detail || data.message || 'Server rejected the analysis. Check your Supabase column named "status".');
+                    throw new Error(data.detail || data.message || 'Analysis failed to start');
                 }
 
             } catch (err) {

@@ -1,5 +1,6 @@
 import os
 import ssl
+import datetime
 
 # Fix for SSL_CERT_FILE issue: if it's set to a non-existent path, httpx (used by supabase) will fail.
 # We remove it from the environment if it's invalid so and ssl.create_default_context() uses system certs.
@@ -180,7 +181,17 @@ def run_full_analysis_job(
     """
     The heavy-lifting background task that runs the AI analysis and uploads results.
     """
-    # Record is now initialized in the endpoint.
+    # Telemetry logger to push backend updates to the frontend
+    job_logs = []
+    def log_step(msg):
+        print(f"[JOB {job_id[:8]}] {msg}")
+        job_logs.append(f"{datetime.datetime.now().strftime('%H:%M:%S')} - {msg}")
+        try:
+            supabase.table("analyses").update({"logs": job_logs}).eq("id", job_id).execute()
+        except: pass
+
+    log_step("Initializing AI environment...")
+    
     # Lazy import to prevent blocking startup during port binding
     from sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D
 
@@ -199,13 +210,15 @@ def run_full_analysis_job(
         # Move the uploaded file from its temp landing spot to our working dir
         try:
             shutil.move(temp_input_path, input_path)
+            log_step(f"Video file validated. Size: {os.path.getsize(input_path)//1024}KB")
         except Exception as e:
-            print(f"[JOB {job_id[:8]}] File move error: {e}")
+            log_step(f"CRITICAL ERROR: File move failed: {e}")
             supabase.table("analyses").update({"status": "failed", "error": str(e)}).eq("id", job_id).execute()
             return
 
+        try:
             # 3. Initialize and run SportsAnalyzer
-            print(f"[JOB {job_id[:8]}] Loading AI Model ({yolo_size})...")
+            log_step(f"Loading Neural Network ({yolo_size})...")
             import gc
             gc.collect() # Force cleanup before loading heavy model
 
@@ -218,23 +231,25 @@ def run_full_analysis_job(
                 pick=False 
             )
             
-            print(f"[JOB {job_id[:8]}] Frame detection started...")
+            log_step("Commencing Pose Estimation & Tracking...")
             summary = analyzer.process_video()
-            print(f"[JOB {job_id[:8]}] Tracking complete. {len(analyzer.frame_metrics)} frames processed.")
+            log_step(f"Tracking concluded. {len(analyzer.frame_metrics)} frames analyzed.")
             gc.collect()
 
             # 4. Run optional Sports2D pipeline
             if run_sports2d:
-                print(f"[JOB {job_id[:8]}] Running Sports2D clinical pipeline...")
+                log_step("Invoking deep clinical pipeline (Sports2D)...")
                 s2d_dir = os.path.join(temp_dir, "Sports2D")
                 analyzer.run_sports2d(
                     result_dir=s2d_dir,
                     mode="balanced",
                     participant_mass_kg=mass_kg
                 )
+                log_step("Clinical data extracted.")
                 gc.collect()
 
             # 5. Export unified data (JSON, CSV, TRC, MOT)
+            log_step("Synchronizing biomechanical datasets...")
             json_out = os.path.join(data_dir, "analytics_unified.json")
             csv_out = os.path.join(data_dir, "bio_metrics.csv")
             trc_out = os.path.join(data_dir, "trajectories.trc")
@@ -254,6 +269,7 @@ def run_full_analysis_job(
                 f.write(analyzer.get_report_string())
 
             # 6. Generate Analytics Plots
+            log_step("Synthesizing graphical metrics...")
             plotter = AnalyticsPlotter(results_dir=results_dir, player_id=player_id)
             plotter.generate_all(
                 frame_metrics=analyzer.frame_metrics,
@@ -261,13 +277,13 @@ def run_full_analysis_job(
             )
 
             # 7. Upload All Assets (Video to Cloudinary, Others to Supabase)
-            print(f"[JOB {job_id[:8]}] Uploading results...")
+            log_step("Uploading finalized assets to cloud storage...")
             asset_prefix = f"jobs/{job_id}"
             
             # VIDEO OPTIMIZATION
             video_url = upload_video_to_cloudinary(output_video_path, f"mitus_ai_analytics_{job_id}")
             if not video_url:
-                print(f"[JOB {job_id[:8]}] Cloudinary fallback used.")
+                log_step("Cloudinary bypass: using direct Supabase storage.")
                 video_url = upload_file_to_supabase(output_video_path, f"{asset_prefix}/{output_video_name}")
 
             # Upload data files and plots
@@ -275,6 +291,7 @@ def run_full_analysis_job(
             plot_urls = upload_directory_to_supabase(results_dir, f"{asset_prefix}/plots")
 
             # Final update to Supabase record
+            log_step("Job finalized successfully.")
             full_summary = {
                 "player_summary": asdict(summary),
                 "biomechanics_summary": analyzer.bio_engine.summary_dict() if analyzer.bio_engine else {},
@@ -298,6 +315,7 @@ def run_full_analysis_job(
         except Exception as e:
             import traceback
             traceback.print_exc()
+            log_step(f"FATAL ERROR: {str(e)}")
             try:
                 supabase.table("analyses").update({
                     "status": "failed",

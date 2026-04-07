@@ -13,6 +13,9 @@ import tempfile
 import glob
 from typing import Optional, List
 from dataclasses import asdict
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse
@@ -148,6 +151,65 @@ def upload_directory_to_supabase(directory: str, prefix: str) -> dict:
                 urls[rel_path] = url
     return urls
 
+def send_analysis_email(to_email: str, job_id: str, player_id: int, video_url: str):
+    """Sends a summary email to the user with a link to their results."""
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+
+    if not all([smtp_user, smtp_password]):
+        print(f"[Email Bypassed] Missing SMTP credentials. Email would have gone to {to_email}")
+        return
+
+    # Clean the credentials (Gmail App Passwords should have no spaces)
+    smtp_user = smtp_user.strip()
+    smtp_password = smtp_password.replace(" ", "").strip()
+    to_email = to_email.strip()
+
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = smtp_user
+        msg['To'] = to_email
+        msg['Subject'] = f"Mitus AI: Analysis Complete - Player #{player_id}"
+
+        dashboard_url = f"{os.getenv('BASE_URL', 'http://localhost:8000')}/dashboard.html?job_id={job_id}"
+        
+        body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
+                <h1 style="color: #00f0ff; background: #06070a; padding: 20px; border-radius: 10px; text-align: center; margin: 0;">Mitus AI</h1>
+                <h3 style="text-align: center; color: #555; margin-top: 20px;">Analysis Report Finalized</h3>
+                <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                <p>Hello coach,</p>
+                <p>The biomechanical analysis for <strong>Player #{player_id}</strong> is ready for review.</p>
+                <div style="margin: 20px 0; padding: 15px; background: #f9f9f9; border-left: 4px solid #00f0ff;">
+                    <p style="margin: 0;"><strong>Job ID:</strong> {job_id}</p>
+                    <p style="margin: 5px 0 0 0;"><strong>Status:</strong> Success</p>
+                </div>
+                <p>You can access the full interactive dashboard and downloadable reports below:</p>
+                <div style="text-align: center; margin-top: 30px;">
+                    <a href="{dashboard_url}" style="display: inline-block; padding: 15px 35px; background: #00f0ff; color: #000; text-decoration: none; border-radius: 8px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; box-shadow: 0 4px 15px rgba(0,240,255,0.3);">View Results Dashboard</a>
+                </div>
+                <p style="margin-top: 30px; font-size: 0.8rem; color: #888;">Note: The annotated video is also available directly at: <a href="{video_url}">{video_url}</a></p>
+                <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                <p style="font-size: 0.7rem; color: #aaa; text-align: center;">This is an automated notification from the Mitus AI Sports Analytics System.</p>
+            </div>
+        </body>
+        </html>
+        """
+        msg.attach(MIMEText(body, 'html'))
+
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.send_message(msg)
+        server.quit()
+        print(f"[Email Sent] Analysis report for {job_id} sent to {to_email}")
+    except Exception as e:
+        print(f"[Email Error] Failed to send to {to_email}: {e}")
+
 # ── API Endpoints ─────────────────────────────────────────────────────────────
 
 static_dir = os.path.join(os.path.dirname(__file__), "static_ui")
@@ -176,7 +238,8 @@ def run_full_analysis_job(
     mass_kg: float,
     session_tags: str,
     run_sports2d: bool,
-    original_filename: str
+    original_filename: str,
+    email: Optional[str] = None
 ):
     """
     The heavy-lifting background task that runs the AI analysis and uploads results.
@@ -310,6 +373,21 @@ def run_full_analysis_job(
                 "run_sports2d": run_sports2d
             }).eq("id", job_id).execute()
 
+            # --- SEND EMAIL NOTIFICATION ---
+            if email:
+                print(f"[JOB {job_id[:8]}] Queuing email notification...")
+                supabase.table("analyses").update({
+                    "logs": logs + [f"[{datetime.now().isoformat()}] - Dispatching report email to {email}..."]
+                }).eq("id", job_id).execute()
+                
+                try:
+                    send_analysis_email(email, job_id, player_id, video_url)
+                    logs.append(f"[{datetime.now().isoformat()}] - Email report delivered successfully.")
+                except Exception as eval_err:
+                    logs.append(f"[{datetime.now().isoformat()}] - Email Error: {str(eval_err)}")
+                
+                supabase.table("analyses").update({"logs": logs}).eq("id", job_id).execute()
+
             print(f"[JOB {job_id[:8]}] Successfully completed.")
 
         except Exception as e:
@@ -334,7 +412,8 @@ async def analyze_video(
     player_height: float = 1.75,
     mass_kg: float = 75.0,
     session_tags: str = "performance-match",
-    run_sports2d: bool = False
+    run_sports2d: bool = False,
+    email: Optional[str] = None
 ):
     """
     Asynchronous analysis endpoint:
@@ -398,7 +477,8 @@ async def analyze_video(
         mass_kg,
         session_tags,
         run_sports2d,
-        file.filename
+        file.filename,
+        email
     )
 
     return JSONResponse(

@@ -8,24 +8,54 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="dashboard.css">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
-<body>
     <div class="app-container">
-        <!-- Sidebar Navigation Removed -->
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-logo" onclick="toggleSidebar()" style="cursor: pointer;">M</div>
+                <div class="brand-text">
+                    <h2>Mitus AI.</h2>
+                    <span>PRO ANALYTICS</span>
+                </div>
+            </div>
+
+            <nav>
+                <ul class="nav-links">
+                    <li class="active"><a href="dashboard.html"><i class="fa-solid fa-gauge"></i> <span>Dashboard</span></a></li>
+                    <li><a href="#"><i class="fa-solid fa-users"></i> <span>Squad</span></a></li>
+                    <li><a href="#"><i class="fa-solid fa-wave-square"></i> <span>Sessions</span></a></li>
+                    <li><a href="/"><i class="fa-solid fa-video"></i> <span>CV Analysis</span></a></li>
+                </ul>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="user-avatar">NL</div>
+                <div class="user-info">
+                    <h4>Nidhal L.</h4>
+                    <p>Head Coach</p>
+                </div>
+                <i class="fa-solid fa-gear" style="margin-left: auto; color: var(--text-secondary); cursor: pointer;"></i>
+            </div>
+        </aside>
+
         <!-- Main Content Area -->
         <main class="main-content">
             <!-- Header -->
-            <header class="top-nav glass">
+            <header class="top-nav glass" style="margin-bottom: 2rem;">
                 <div class="player-info" id="playerInfo">
-                    <h1 id="viewTitle">Player Analysis</h1>
-                    <p class="subtitle" id="sessionInfo">Select an analysis or start a new one</p>
+                    <h1 id="viewTitle" style="font-size: 2rem;">Player Analysis</h1>
+                    <p class="subtitle" id="sessionInfo">Biometric performance & risk report</p>
                 </div>
                 <div class="actions">
-                    <button class="btn btn-secondary" onclick="toggleHistory()">View History</button>
-                    <button class="btn btn-primary" onclick="showUploadModal()">New Analysis</button>
+                    <button class="btn btn-secondary" onclick="toggleHistory()"><i class="fa-solid fa-clock-rotate-left"></i> History</button>
+                    <a href="/" class="btn btn-primary" style="text-decoration: none; display: inline-flex; align-items: center; gap: 8px;">
+                        <i class="fa-solid fa-plus"></i> New Analysis
+                    </a>
                 </div>
             </header>
 
@@ -41,80 +71,6 @@
                 </div>
             </section>
 
-            <!-- Upload Modal -->
-            <div id="uploadModal" class="modal-overlay" style="display: none;">
-                <div class="modal-content glass">
-                    <div class="modal-header">
-                        <h2>New Biomechanics Analysis</h2>
-                        <button class="close-btn" onclick="hideUploadModal()">&times;</button>
-                    </div>
-                    <form id="uploadForm" class="analysis-form">
-                        <div class="form-grid">
-                            <div class="form-group span-12">
-                                <label for="videoFile">Video Upload (.MP4)</label>
-                                <div class="file-drop-zone" id="dropZone">
-                                    <input type="file" id="videoFile" accept="video/mp4" required>
-                                    <div class="drop-zone-text">
-                                        <i class="icon-upload"></i>
-                                        <span>Drag & Drop or Click to Upload</span>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <div class="form-group span-6">
-                                <label for="playerId">Subject ID (Player #)</label>
-                                <input type="number" id="playerId" value="1" min="1">
-                            </div>
-                            
-                            <div class="form-group span-6">
-                                <label for="sessionTags">Session Tags</label>
-                                <input type="text" id="sessionTags" placeholder="milan-derby-2026">
-                            </div>
-
-                            <div class="form-group span-4">
-                                <label for="playerHeight">Height (m)</label>
-                                <input type="number" id="playerHeight" value="1.75" step="0.01">
-                            </div>
-
-                            <div class="form-group span-4">
-                                <label for="massKg">Mass (kg)</label>
-                                <input type="number" id="massKg" value="75.0" step="0.1">
-                            </div>
-
-                            <div class="form-group span-4">
-                                <label for="yoloSize">Tracker Precision</label>
-                                <select id="yoloSize">
-                                    <option value="n">Nano (Fastest)</option>
-                                    <option value="s">Small</option>
-                                    <option value="m" selected>Medium (Recommended)</option>
-                                    <option value="l">Large</option>
-                                    <option value="x">X-Large (Most Precise)</option>
-                                </select>
-                            </div>
-
-                            <div class="form-group span-12 checkbox-group">
-                                <input type="checkbox" id="runSports2d">
-                                <label for="runSports2d">Run Deep Pipeline (Sports2D/Kinematics)</label>
-                            </div>
-                        </div>
-
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" onclick="hideUploadModal()">Cancel</button>
-                            <button type="submit" class="btn btn-primary" id="submitBtn">Start Analysis</button>
-                        </div>
-                    </form>
-
-                    <!-- Progress state -->
-                    <div id="uploadProgress" class="upload-progress" style="display: none;">
-                        <div class="spinner"></div>
-                        <h3>Processing Video...</h3>
-                        <p>This may take a few minutes depending on video length and pipeline options.</p>
-                        <div class="progress-bar-container">
-                            <div class="progress-bar" id="progressBar"></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
 
             <!-- Dashboard Grid -->
             <div class="dashboard-grid">

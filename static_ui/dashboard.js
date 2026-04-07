@@ -27,20 +27,9 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
         loadLatest();
     }
-    setupForm();
 });
 
 // --- Navigation & UI ---
-
-function showUploadModal() {
-    document.getElementById('uploadModal').style.display = 'flex';
-    document.getElementById('uploadForm').style.display = 'block';
-    document.getElementById('uploadProgress').style.display = 'none';
-}
-
-function hideUploadModal() {
-    document.getElementById('uploadModal').style.display = 'none';
-}
 
 async function toggleHistory() {
     const section = document.getElementById('historySection');
@@ -50,6 +39,10 @@ async function toggleHistory() {
     } else {
         section.style.display = 'none';
     }
+}
+
+function toggleSidebar() {
+    document.querySelector('.sidebar').classList.toggle('collapsed');
 }
 
 // --- Data Fetching ---
@@ -164,6 +157,13 @@ function displayAnalysis(analysis) {
         }, 150);
     }
 
+    // --- NEW: Sync URL with the ID so users can share direct links ---
+    if (analysis.id) {
+        const url = new URL(window.location);
+        url.searchParams.set('job_id', analysis.id);
+        window.history.replaceState({}, '', url);
+    }
+
     // Update KPIs and Charts
     updateSummary(analysis.summary);
     
@@ -218,75 +218,6 @@ function createFileLink(name, url, type) {
 
 // --- Upload & Analysis ---
 
-function setupForm() {
-    const form = document.getElementById('uploadForm');
-    const dropZone = document.getElementById('dropZone');
-    const fileInput = document.getElementById('videoFile');
-
-    fileInput.onchange = () => {
-        if (fileInput.files.length > 0) {
-            dropZone.querySelector('span').textContent = fileInput.files[0].name;
-        }
-    };
-
-    form.onsubmit = async (e) => {
-        e.preventDefault();
-        
-        const formData = new FormData();
-        formData.append('file', fileInput.files[0]);
-        formData.append('player_id', document.getElementById('playerId').value);
-        formData.append('player_height', document.getElementById('playerHeight').value);
-        formData.append('mass_kg', document.getElementById('massKg').value);
-        formData.append('yolo_size', document.getElementById('yoloSize').value);
-        formData.append('session_tags', document.getElementById('sessionTags').value);
-        formData.append('run_sports2d', document.getElementById('runSports2d').checked);
-
-        // UI State
-        form.style.display = 'none';
-        document.getElementById('uploadProgress').style.display = 'block';
-        const progressBar = document.getElementById('progressBar');
-        progressBar.style.width = '10%'; // Initial simulated progress
-
-        try {
-            // Simulated progress because fetch doesn't support upload progress easily without XHR
-            let prog = 10;
-            const interval = setInterval(() => {
-                prog = Math.min(prog + 1, 95);
-                progressBar.style.width = `${prog}%`;
-            }, 2000);
-
-            const response = await fetch(`${API_BASE}/analyze`, {
-                method: 'POST',
-                body: formData
-            });
-
-            clearInterval(interval);
-            
-            if (response.ok) {
-                const result = await response.json();
-                progressBar.style.width = '100%';
-                setTimeout(() => {
-                    hideUploadModal();
-                    // Result from /analyze doesn't have created_at, but we can display it
-                    const displayRes = {
-                        ...result,
-                        created_at: new Date().toISOString(),
-                        video_url: result.results.annotated_video,
-                        data_urls: result.results.data_files
-                    };
-                    displayAnalysis(displayRes);
-                }, 500);
-            } else {
-                const error = await response.json();
-                alert(`Analysis failed: ${error.detail || 'Unknown error'}`);
-                showUploadModal();
-            }
-        } catch (error) {
-            alert(`Technical error: ${error.message}`);
-            showUploadModal();
-        }
-    };
-}
 
 // --- Chart Rendering (adapted from original) ---
 

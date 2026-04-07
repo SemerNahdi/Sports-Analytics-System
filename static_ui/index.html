@@ -3,497 +3,294 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sports Analytics System - Management Portal</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <title>Mitus AI - CV Analysis</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="dashboard.css">
     <style>
-        :root {
-            --primary: #F2F2F2; /* Clean White */
-            --bg: #0A0A0A;
-            --card: #141414;
-            --text: #F2F2F2;
-            --accent: #2A2A2A;
-            --muted: #888;
-            --glass: rgba(255, 255, 255, 0.05);
-            --gradient: linear-gradient(135deg, #FFF 0%, #AAA 100%);
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: 'Outfit', sans-serif;
-        }
-
-        body {
-            background-color: var(--bg);
-            color: var(--text);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-            overflow-x: hidden;
-        }
-
-        .container {
+        .fade-in { animation: fadeIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .upload-card {
+            max-width: 800px;
+            margin: 2rem auto;
             width: 100%;
-            max-width: 900px;
-            background: var(--card);
-            padding: 40px;
-            border-radius: 20px;
-            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.8);
-            border: 1px solid var(--accent);
-            position: relative;
-            z-index: 10;
         }
 
-        header {
-            text-align: center;
-            margin-bottom: 40px;
-        }
-
-        h1 {
-            font-size: 2.2rem;
-            font-weight: 700;
-            margin-bottom: 8px;
-            background: var(--gradient);
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-        }
-
-        p.subtitle {
-            color: var(--muted);
-            font-size: 1rem;
-            letter-spacing: 0.5px;
-        }
-
-        form {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 24px;
-        }
-
-        .form-group {
+        .step-indicator {
             display: flex;
-            flex-direction: column;
+            gap: 2rem;
+            margin-bottom: 2.5rem;
+            justify-content: center;
+        }
+
+        .step {
+            display: flex;
+            align-items: center;
             gap: 10px;
-        }
-
-        .form-group.full-width {
-            grid-column: span 2;
-        }
-
-        label {
-            font-size: 0.8rem;
+            color: var(--text-secondary);
             font-weight: 600;
-            color: #777;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        input[type="file"], input[type="text"], input[type="number"], select {
-            background: #000;
-            border: 1px solid var(--accent);
-            padding: 14px 18px;
-            border-radius: 10px;
-            color: white;
-            font-size: 1rem;
-            transition: all 0.2s ease;
-        }
-
-        input:focus, select:focus {
-            outline: none;
-            border-color: #FFF;
-            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.05);
-        }
-
-        input[type="file"]::file-selector-button {
-            background: var(--accent);
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            margin-right: 15px;
-            cursor: pointer;
-            font-size: 0.8rem;
-            text-transform: uppercase;
-        }
-
-        .checkbox-group {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            cursor: pointer;
             font-size: 0.9rem;
-            color: #AAA;
         }
 
-        .checkbox-group input {
-            cursor: pointer;
-            accent-color: #FFF;
-            width: 18px;
-            height: 18px;
-        }
-
-        button {
-            grid-column: span 2;
-            margin-top: 20px;
-            padding: 18px;
-            border-radius: 12px;
-            border: none;
-            background: var(--primary);
-            color: #000;
-            font-size: 1rem;
-            font-weight: 700;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-        }
-
-        button:hover {
-            background: #FFF;
-            transform: translateY(-1px);
-        }
-
-        button:active {
-            transform: translateY(0);
-        }
-
-        button:disabled {
-            background: #222;
-            color: #444;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        #status {
-            grid-column: span 2;
-            margin-top: 30px;
-            padding: 24px;
-            background: #000;
-            border-radius: 12px;
-            border: 1px solid var(--accent);
-            display: none;
-            animation: fadeIn 0.4s ease-out;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        .loader {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-            color: #BBB;
-        }
-
-        .spinner {
-            width: 20px;
-            height: 20px;
-            border: 2px solid rgba(255, 255, 255, 0.1);
-            border-top-color: #FFF;
+        .step.active { color: var(--accent-neon); }
+        .step-num {
+            width: 24px;
+            height: 24px;
             border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        .results {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 12px;
-            margin-top: 20px;
-        }
-
-        .result-item {
+            border: 2px solid currentColor;
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            background: #111;
-            padding: 14px 20px;
-            border-radius: 8px;
-            border: 1px solid var(--accent);
-            transition: border-color 0.2s;
+            justify-content: center;
+            font-size: 0.75rem;
         }
 
-        .result-item:hover {
-            border-color: #555;
+        .processing-view {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            flex: 1;
+            text-align: center;
         }
 
-        .result-item a {
-            color: #FFF;
-            text-decoration: none;
-            font-weight: 600;
-            font-size: 0.8rem;
-            letter-spacing: 1px;
-            border: 1px solid #444;
-            padding: 6px 12px;
-            border-radius: 4px;
-            transition: all 0.2s;
+        .loading-ring-large {
+            width: 150px;
+            height: 150px;
+            border: 4px solid rgba(0, 240, 255, 0.05);
+            border-top: 4px solid var(--accent-neon);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 3rem;
+            position: relative;
+            box-shadow: 0 0 40px rgba(0, 240, 255, 0.1);
         }
 
-        .result-item a:hover {
-            background: #FFF;
-            color: #000;
-            border-color: #FFF;
-        }
-
-        .badge {
-            background: var(--accent);
-            color: #AAA;
-            padding: 4px 10px;
-            border-radius: 4px;
-            font-size: 0.7rem;
-            font-weight: 700;
-            text-transform: uppercase;
-        }
-
-        @media (max-width: 600px) {
-            form { grid-template-columns: 1fr; }
-            .form-group.full-width { grid-column: auto; }
-            button { grid-column: auto; }
-            #status { grid-column: auto; }
+        .loading-ring-large::after {
+            content: '';
+            position: absolute;
+            inset: 15px;
+            border: 4px solid rgba(0, 153, 255, 0.05);
+            border-bottom: 4px solid #0099ff;
+            border-radius: 50%;
+            animation: spin 1.5s linear reverse infinite;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>Analytics System</h1>
-            <p class="subtitle">AI-Powered Biomechanics Port</p>
-        </header>
-
-        <form id="analysisForm">
-            <div class="form-group full-width">
-                <label for="file">Source Video (.mp4)</label>
-                <input type="file" id="file" name="file" accept="video/mp4" required>
-            </div>
-
-            <div class="form-group">
-                <label for="player_id">Subject ID</label>
-                <input type="number" id="player_id" name="player_id" value="1" min="1">
-            </div>
-
-            <div class="form-group">
-                <label for="yolo_size">AI Detection Precision</label>
-                <select id="yolo_size" name="yolo_size">
-                    <option value="n">Lite (Fastest)</option>
-                    <option value="s" selected>Standard (Recommended)</option>
-                    <option value="m">Advanced (Higher Precision)</option>
-                    <option value="l">Elite (Maximum Precision)</option>
-                </select>
-            </div>
-
-            <div class="form-group checkbox-group" style="display: flex; align-items: center; gap: 10px; margin-top: 20px;">
-                <input type="checkbox" id="run_sports2d" name="run_sports2d" style="width: auto; height: 20px; cursor: pointer;">
-                <label for="run_sports2d" style="margin: 0; font-size: 0.8rem; cursor: pointer;">Enable Deep Biomechanics Pipeline (Sports2D)</label>
-            </div>
-
-            <button type="submit" id="submitBtn">Process Analysis</button>
-        </form>
-
-        <div id="status">
-            <div id="loadingMessage" style="display: none;">
-                <div class="loader">
-                    <div class="spinner"></div>
-                    <div id="loaderText">Uploading video and starting analysis...</div>
-                </div>
-                <div id="progressBarContainer" style="width: 100%; height: 6px; background: #222; border-radius: 3px; margin-top: 15px; overflow: hidden; display: none;">
-                    <div id="progressBar" style="width: 0%; height: 100%; background: #FFF; transition: width 0.3s ease;"></div>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-logo" onclick="toggleSidebar()" style="cursor: pointer;">M</div>
+                <div class="brand-text">
+                    <h2>Mitus AI.</h2>
+                    <span>PRO ANALYTICS</span>
                 </div>
             </div>
+
+            <nav>
+                <ul class="nav-links">
+                    <li><a href="dashboard.html"><i class="fa-solid fa-gauge"></i> <span>Dashboard</span></a></li>
+                    <li><a href="#"><i class="fa-solid fa-users"></i> <span>Squad</span></a></li>
+                    <li><a href="#"><i class="fa-solid fa-wave-square"></i> <span>Sessions</span></a></li>
+                    <li class="active"><a href="/"><i class="fa-solid fa-video"></i> <span>CV Analysis</span></a></li>
+                </ul>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="user-avatar">NL</div>
+                <div class="user-info">
+                    <h4>Nidhal L.</h4>
+                    <p>Head Coach</p>
+                </div>
+                <i class="fa-solid fa-gear" style="margin-left: auto; color: var(--text-secondary); cursor: pointer;"></i>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
             
-            <div id="errorMessage" style="display: none; color: #FFF; background: #330000; padding: 15px; border-radius: 8px;">
-                <strong>Error:</strong> <span id="errorText"></span>
+            <!-- STEP 1: UPLOAD INTERFACE -->
+            <div id="uploadView" class="fade-in" style="width: 100%;">
+                <header class="analysis-header" style="margin-bottom: 3rem;">
+                    <div>
+                        <a href="dashboard.html" class="back-link"><i class="fa-solid fa-chevron-left"></i> Back to Dashboard</a>
+                        <h1 style="font-size: 2.5rem; margin-top: 0.5rem;">New CV Analysis</h1>
+                        <p style="color: var(--text-secondary);">Initialize the AI biomechanics pipeline by uploading a session recording.</p>
+                    </div>
+                </header>
+
+                <div class="step-indicator">
+                    <div class="step active"><div class="step-num">1</div> Session Config</div>
+                    <div class="step"><div class="step-num">2</div> AI Processing</div>
+                    <div class="step"><div class="step-num">3</div> Results</div>
+                </div>
+
+                <div class="upload-card card glass">
+                    <form id="analysisForm">
+                        <div class="form-grid">
+                            <!-- Left Column: Settings -->
+                            <div class="span-6" style="display: flex; flex-direction: column; gap: 1.5rem;">
+                                <div class="form-group">
+                                    <label>Session Title</label>
+                                    <input type="text" id="session_tags" name="session_tags" placeholder="e.g., Sprint Test - AC Milan" value="Match Performance">
+                                </div>
+                                <div class="form-group">
+                                    <label>Subject ID / Player #</label>
+                                    <input type="number" id="player_id" name="player_id" value="1" min="1">
+                                </div>
+                                <div class="form-group">
+                                    <label>AI Tracking Model</label>
+                                    <select id="yolo_size" name="yolo_size">
+                                        <option value="n">Nano (Real-time speed)</option>
+                                        <option value="s" selected>Standard (Balanced)</option>
+                                        <option value="m">Advanced (Clinical precision)</option>
+                                        <option value="l">Elite (Maximum depth)</option>
+                                    </select>
+                                </div>
+                                <div class="checkbox-group" style="padding: 1rem; background: rgba(255,255,255,0.02); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
+                                    <input type="checkbox" id="run_sports2d" name="run_sports2d">
+                                    <div style="display: flex; flex-direction: column;">
+                                        <label for="run_sports2d" style="margin: 0; color: white;">Deep Biomechanics Pipeline</label>
+                                        <span style="font-size: 0.7rem; color: var(--text-secondary);">Enables joint torque and force estimation.</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Right Column: Upload Area -->
+                            <div class="span-6">
+                                <div class="form-group" style="height: 100%;">
+                                    <label>Recording Source (.MP4)</label>
+                                    <div class="file-drop-zone" id="dropZone" style="height: calc(100% - 25px); min-height: 250px; display: flex; align-items: center; justify-content: center;">
+                                        <input type="file" id="file" name="file" accept="video/mp4" required>
+                                        <div class="drop-zone-text">
+                                            <div style="width: 60px; height: 60px; border-radius: 50%; background: rgba(0,240,255,0.1); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                                                <i class="fa-solid fa-upload" style="font-size: 1.5rem; color: var(--accent-neon);"></i>
+                                            </div>
+                                            <span style="font-weight: 600; color: white;">Drop video or click to browse</span>
+                                            <p style="font-size: 0.75rem; margin-top: 5px;">H.264 / MP4 up to 500MB</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="span-12" style="margin-top: 1rem;">
+                                <button type="submit" id="submitBtn" class="btn btn-primary" style="width: 100%; padding: 1.25rem; font-size: 1rem;">
+                                    <i class="fa-solid fa-play" style="margin-right: 10px;"></i> Start AI Analysis
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
             </div>
-        </div>
 
-        <!-- NEW: Integrated Dashboard Section (Hidden until processing is done) -->
-        <div id="dashboardSection" style="display: none; margin-top: 50px; animation: fadeIn 0.8s ease;">
-            <header style="margin-bottom: 30px; display: flex; justify-content: space-between; align-items: flex-end;">
-                <div>
-                    <h2 id="resultTitle" style="font-size: 1.8rem; text-transform: uppercase; letter-spacing: 2px;">Analysis Report</h2>
-                    <p id="resultSubtitle" style="color: var(--muted); font-size: 0.9rem;">Biomechanical Performance Data</p>
-                </div>
-                <button onclick="location.reload()" style="padding: 10px 20px; font-size: 0.8rem; margin: 0;">New Upload</button>
-            </header>
-
-            <div class="analysis-grid" style="display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px;">
-                <!-- Video Feed -->
-                <div class="card" style="grid-column: span 8; background: #000; padding: 0; overflow: hidden; border: 1px solid var(--accent);">
-                    <video id="resultVideo" controls style="width: 100%; display: block;"></video>
-                </div>
-
-                <!-- KPI Side Column -->
-                <div style="grid-column: span 4; display: flex; flex-direction: column; gap: 15px;">
-                    <div class="kpi-mini" style="background: var(--glass); padding: 20px; border-radius: 12px; border: 1px solid var(--accent);">
-                        <label style="color: #666; font-size: 0.7rem;">Injury Risk Score</label>
-                        <h3 id="kpiRisk" style="font-size: 1.8rem; color: #FFF;">--/100</h3>
-                    </div>
-                    <div class="kpi-mini" style="background: var(--glass); padding: 20px; border-radius: 12px; border: 1px solid var(--accent);">
-                        <label style="color: #666; font-size: 0.7rem;">Gait Symmetry</label>
-                        <h3 id="kpiSymmetry" style="font-size: 1.8rem; color: #FFF;">--%</h3>
-                    </div>
-                    <div class="kpi-mini" style="background: var(--glass); padding: 20px; border-radius: 12px; border: 1px solid var(--accent);">
-                        <label style="color: #666; font-size: 0.7rem;">Max Speed</label>
-                        <h3 id="kpiSpeed" style="font-size: 1.8rem; color: #FFF;">-- m/s</h3>
-                    </div>
-                </div>
-
-                <!-- Charts -->
-                <div class="card" style="grid-column: span 6; background: var(--glass); padding: 20px; border-radius: 12px; border: 1px solid var(--accent);">
-                    <h4 style="font-size: 0.8rem; text-transform: uppercase; margin-bottom: 15px; color: #888;">Speed & Acceleration</h4>
-                    <canvas id="speedChart" height="200"></canvas>
-                </div>
-                <div class="card" style="grid-column: span 6; background: var(--glass); padding: 20px; border-radius: 12px; border: 1px solid var(--accent);">
-                    <h4 style="font-size: 0.8rem; text-transform: uppercase; margin-bottom: 15px; color: #888;">Joint Mobility (Knee Flexion)</h4>
-                    <canvas id="jointChart" height="200"></canvas>
-                </div>
+            <!-- STEP 2: PROCESSING STATE -->
+            <div id="processingView" class="processing-view fade-in">
+                <div class="loading-ring-large"></div>
+                <h1 id="loaderTitle" style="font-size: 2.5rem; margin-bottom: 1rem;">Neural Network Active</h1>
+                <p id="loaderText" style="color: var(--text-secondary); font-size: 1.1rem; max-width: 500px; line-height: 1.6;">
+                    The Mitus AI Engine is currently processing your video frames. This includes pose estimation, trajectory mapping, and biomechanical modeling.
+                </p>
                 
-                <!-- Resources -->
-                <div class="card" style="grid-column: span 12; background: #050505; padding: 20px; border-radius: 12px; border: 1px solid var(--accent);">
-                    <h4 style="font-size: 0.8rem; text-transform: uppercase; margin-bottom: 20px; color: #888;">Data Exports</h4>
-                    <div id="exportLinks" style="display: flex; gap: 15px; flex-wrap: wrap;">
-                        <!-- Placeholder for links -->
+                <div style="width: 100%; max-width: 600px; margin-top: 4rem;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 0.85rem; font-weight: 600;">
+                        <span id="currentStatus" style="color: var(--accent-neon);">INITIALIZING PIPELINE</span>
+                        <span id="progressPercent">0%</span>
+                    </div>
+                    <div class="progress-track" style="width: 100%; height: 8px; background: rgba(255,255,255,0.05); border-radius: 4px; overflow: hidden;">
+                        <div class="progress-fill" id="progressBar" style="height: 100%; background: linear-gradient(90deg, var(--accent-neon), #0099ff); width: 0%; box-shadow: 0 0 20px rgba(0,240,255,0.3); transition: width 0.5s ease;"></div>
+                    </div>
+                </div>
+
+                <div id="eventStream" class="glass" style="margin-top: 3rem; width: 100%; max-width: 600px; border-radius: 16px; padding: 1.5rem; text-align: left;">
+                    <h4 style="margin-bottom: 1rem; font-size: 0.8rem; text-transform: uppercase; color: var(--text-secondary); letter-spacing: 1px;">Telemetry Log</h4>
+                    <div id="logItems" style="display: flex; flex-direction: column; gap: 8px;">
+                        <!-- Logs will appear here -->
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
 
-    <!-- Chart.js and Dashboard Logic -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        </main>
+    </div>
 
     <script>
         const form = document.getElementById('analysisForm');
         const submitBtn = document.getElementById('submitBtn');
-        const statusDiv = document.getElementById('status');
-        const loadingMessage = document.getElementById('loadingMessage');
+        const uploadView = document.getElementById('uploadView');
+        const processingView = document.getElementById('processingView');
+        const progressBar = document.getElementById('progressBar');
+        const progressPercent = document.getElementById('progressPercent');
+        const currentStatus = document.getElementById('currentStatus');
+        const logItems = document.getElementById('logItems');
         const loaderText = document.getElementById('loaderText');
-        const dashboardSection = document.getElementById('dashboardSection');
-        const errorMessage = document.getElementById('errorMessage');
-        const errorText = document.getElementById('errorText');
+
+        function toggleSidebar() {
+            document.querySelector('.sidebar').classList.toggle('collapsed');
+        }
 
         let pollInterval = null;
-        let speedChart = null;
-        let jointChart = null;
-        let pollAttempts = 0;
-        let startTime = null;
-        let lastLogIndex = 0; // Tracking for telemetry
+        let lastLogIndex = 0;
 
-        // --- TELEMETRY: PIPE BACKEND LOGS TO CONSOLE ---
+        function addLog(msg) {
+            const div = document.createElement('div');
+            div.className = 'fade-in';
+            div.style.fontSize = '0.85rem';
+            div.style.padding = '8px 12px';
+            div.style.background = 'rgba(255,255,255,0.02)';
+            div.style.borderRadius = '8px';
+            div.style.color = '#94a3b8';
+            div.innerHTML = `<span style="color: var(--accent-neon); margin-right: 10px;">[${new Date().toLocaleTimeString()}]</span> ${msg}`;
+            logItems.prepend(div);
+            if (logItems.children.length > 5) logItems.lastElementChild.remove();
+        }
+
         function updateTelemetry(logs) {
             if (!logs || !Array.isArray(logs)) return;
             
-            // Print only NEW logs to console
             for (let i = lastLogIndex; i < logs.length; i++) {
-                console.log(`%c[BACKEND] %c${logs[i]}`, 'color: #00f2fe; font-weight: bold;', 'color: #FFF;');
-                // Also update the UI subtext
-                loaderText.innerText = logs[i].split(' - ')[1] || logs[i];
+                const logMsg = logs[i].split(' - ')[1] || logs[i];
+                currentStatus.innerText = logMsg.toUpperCase();
+                addLog(logMsg);
+                
+                // Heuristic for progress
+                let progress = Math.min(95, (i / logs.length) * 100 + 10);
+                if (logMsg.toLowerCase().includes('finalized')) progress = 100;
+                
+                progressBar.style.width = `${progress}%`;
+                progressPercent.innerText = `${Math.round(progress)}%`;
                 lastLogIndex++;
             }
         }
 
-        // --- PIPELINE STEP 3: RENDER RESULTS ---
-        function renderDashboard(data) {
-            console.log("%c[SYSTEM] Analysis Successful. Rendering Dashboard...", 'color: #4facfe; font-weight: bold;');
-            
-            loadingMessage.style.display = 'none';
-            form.style.display = 'none'; 
-            dashboardSection.style.display = 'block';
-
-            const video = document.getElementById('resultVideo');
-            video.src = data.video_url;
-            video.load();
-
-            const summary = data.summary.player_summary;
-            document.getElementById('kpiRisk').innerText = `${Math.round(summary.peak_risk_score)}/100`;
-            document.getElementById('kpiSymmetry').innerText = `${Math.round(summary.gait_symmetry_pct)}%`;
-            document.getElementById('kpiSpeed').innerText = `${summary.max_speed.toFixed(1)} m/s`;
-
-            const frames = data.summary.frame_metrics;
-            const labels = frames.map(f => (f.timestamp).toFixed(1) + 's');
-            
-            const speedCtx = document.getElementById('speedChart').getContext('2d');
-            if(speedChart) speedChart.destroy();
-            speedChart = new Chart(speedCtx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: 'Speed (m/s)',
-                        data: frames.map(f => f.speed),
-                        borderColor: '#FFF',
-                        borderWidth: 2,
-                        tension: 0.4,
-                        pointRadius: 0
-                    }]
-                },
-                options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { grid: { color: '#222' } }, x: { display: false } } }
-            });
-
-            const jointCtx = document.getElementById('jointChart').getContext('2d');
-            if(jointChart) jointChart.destroy();
-            jointChart = new Chart(jointCtx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        { label: 'Left Knee', data: frames.map(f => f.left_knee_flexion || f.left_knee_angle), borderColor: '#00f2fe', tension: 0.4, pointRadius: 0 },
-                        { label: 'Right Knee', data: frames.map(f => f.right_knee_flexion || f.right_knee_angle), borderColor: '#4facfe', tension: 0.4, pointRadius: 0 }
-                    ]
-                },
-                options: { responsive: true, scales: { y: { grid: { color: '#222' } }, x: { display: false } } }
-            });
-
-            const exportContainer = document.getElementById('exportLinks');
-            exportContainer.innerHTML = '';
-            if (data.data_urls) {
-                Object.entries(data.data_urls).forEach(([name, url]) => {
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.target = "_blank";
-                    a.innerText = name.toUpperCase();
-                    a.className = "btn-export";
-                    a.style = "color: #FFF; text-decoration: none; padding: 10px 15px; background: #111; border: 1px solid #333; border-radius: 6px; font-size: 0.7rem; letter-spacing: 1px; transition: 0.3s;";
-                    exportContainer.appendChild(a);
-                });
-            }
-        }
-
-        // --- PIPELINE STEP 2: POLL STATUS ---
         async function pollStatus(jobId) {
             try {
-                pollAttempts++;
                 const response = await fetch(`/analyses/${jobId}`);
-                
-                if (response.status === 404) {
-                    if (pollAttempts > 20) throw new Error("Database sync timeout.");
-                    return;
-                }
-
-                const contentType = response.headers.get("content-type");
-                if (!response.ok || !contentType || !contentType.includes("application/json")) return;
+                if (!response.ok) return;
                 
                 const data = await response.json();
-                
-                // --- UPDATE TELEMETRY ---
                 updateTelemetry(data.logs);
 
                 if (data.status === 'success') {
                     clearInterval(pollInterval);
-                    renderDashboard(data);
+                    progressBar.style.width = '100%';
+                    progressPercent.innerText = '100%';
+                    currentStatus.innerText = "PIPELINE COMPLETED";
+                    
+                    setTimeout(() => {
+                        window.location.href = `dashboard.html?job_id=${jobId}`;
+                    }, 1000);
                 } else if (data.status === 'failed') {
                     clearInterval(pollInterval);
-                    throw new Error(data.error || "AI Engine stopped.");
+                    currentStatus.innerText = "ANALYSIS FAILED";
+                    currentStatus.style.color = "#ef4444";
+                    loaderText.innerText = data.error || "A critical error occurred in the AI engine.";
+                    submitBtn.disabled = false;
+                    addLog("CRITICAL ERROR: " + (data.error || "Engine Stopped"));
                 }
             } catch (err) {
                 console.error("Polling Error:", err);
@@ -503,17 +300,19 @@
         form.onsubmit = async (e) => {
             e.preventDefault();
             
-            submitBtn.disabled = true;
-            statusDiv.style.display = 'block';
-            loadingMessage.style.display = 'block';
-            loaderText.innerText = 'Uploading video stream...';
-            errorMessage.style.display = 'none';
-            startTime = Date.now();
-            pollAttempts = 0;
-            lastLogIndex = 0;
+            const fileInput = document.getElementById('file');
+            if (fileInput.files.length === 0) {
+                alert("Please select a video file.");
+                return;
+            }
 
-            const formData = new FormData(form);
+            submitBtn.disabled = true;
+            uploadView.style.display = 'none';
+            processingView.style.display = 'flex';
             
+            addLog("Uploading high-resolution capture...");
+            
+            const formData = new FormData(form);
             try {
                 const response = await fetch('/analyze', {
                     method: 'POST',
@@ -521,20 +320,33 @@
                 });
 
                 const data = await response.json();
-
                 if (response.status === 202 || response.ok) {
-                    loaderText.innerText = 'Initializing AI Analysis...';
-                    if (pollInterval) clearInterval(pollInterval);
+                    addLog("Stream accepted by AI gateway.");
+                    addLog("Job UUID: " + data.job_id);
                     pollInterval = setInterval(() => pollStatus(data.job_id), 2500);
                 } else {
-                    throw new Error(data.detail || data.message || 'Analysis failed to start');
+                    throw new Error(data.detail || 'Analysis failed to start');
                 }
-
             } catch (err) {
-                loadingMessage.style.display = 'none';
-                errorMessage.style.display = 'block';
-                errorText.innerText = err.message;
+                processingView.style.display = 'none';
+                uploadView.style.display = 'block';
+                alert("Error initializing pipeline: " + err.message);
                 submitBtn.disabled = false;
+            }
+        };
+
+        // File drop zone logic
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('file');
+
+        dropZone.onclick = () => fileInput.click();
+        fileInput.onchange = () => {
+            if (fileInput.files.length > 0) {
+                const name = fileInput.files[0].name;
+                dropZone.querySelector('span').innerText = name;
+                dropZone.querySelector('span').style.color = "var(--accent-neon)";
+                dropZone.style.borderColor = "var(--accent-neon)";
+                addLog("File selected: " + name);
             }
         };
     </script>

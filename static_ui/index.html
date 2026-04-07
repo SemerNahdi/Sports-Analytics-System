@@ -140,18 +140,24 @@
                                     <label>Session Title</label>
                                     <input type="text" id="session_tags" name="session_tags" placeholder="e.g., Sprint Test - AC Milan" value="Match Performance">
                                 </div>
-                                <div class="form-group">
-                                    <label>Subject ID / Player #</label>
-                                    <input type="number" id="player_id" name="player_id" value="1" min="1">
-                                </div>
-                                <div class="form-group">
-                                    <label>AI Tracking Model</label>
-                                    <select id="yolo_size" name="yolo_size">
-                                        <option value="n">Nano (Real-time speed)</option>
-                                        <option value="s" selected>Standard (Balanced)</option>
-                                        <option value="m">Advanced (Clinical precision)</option>
-                                        <option value="l">Elite (Maximum depth)</option>
-                                    </select>
+                                <div class="form-grid" style="margin-bottom: 20px;">
+                                    <div class="form-group span-12">
+                                        <label for="player_id">Subject ID</label>
+                                        <input type="number" id="player_id" name="player_id" value="1" min="1">
+                                    </div>
+                                    <div class="form-group span-12" style="margin-top: 1rem;">
+                                        <label for="yolo_size">AI Engine Precision</label>
+                                        <select id="yolo_size" name="yolo_size" style="width: 100%;">
+                                            <option value="n">Nano (Real-time speed)</option>
+                                            <option value="s" selected>Standard (Balanced)</option>
+                                            <option value="m">Advanced (Clinical precision)</option>
+                                            <option value="l">Elite (Maximum depth)</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group span-12" style="margin-top: 1rem;">
+                                        <label for="email">Send results to Email (Optional)</label>
+                                        <input type="email" id="email" name="email" placeholder="e.g. coach@team.com" style="width: 100%;">
+                                    </div>
                                 </div>
                                 <div class="checkbox-group" style="padding: 1rem; background: rgba(255,255,255,0.02); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
                                     <input type="checkbox" id="run_sports2d" name="run_sports2d">
@@ -339,7 +345,6 @@
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('file');
 
-        dropZone.onclick = () => fileInput.click();
         fileInput.onchange = () => {
             if (fileInput.files.length > 0) {
                 const name = fileInput.files[0].name;

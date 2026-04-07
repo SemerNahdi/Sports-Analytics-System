@@ -17,6 +17,30 @@ let trunkChartObj = null;
 // API Base URL (adjust if running on different port)
 const API_BASE = window.location.origin;
 
+// Toast Utility
+function showToast(title, message, icon = 'fa-check') {
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    toast.innerHTML = `
+        <div class="toast-icon"><i class="fa-solid ${icon}"></i></div>
+        <div class="toast-content">
+            <h4>${title}</h4>
+            <p>${message}</p>
+        </div>
+    `;
+    container.appendChild(toast);
+    
+    // Trigger animation
+    setTimeout(() => toast.classList.add('show'), 100);
+    
+    // Auto-remove
+    setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 400);
+    }, 5000);
+}
+
 // Initialize on DOM load
 document.addEventListener('DOMContentLoaded', () => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -162,6 +186,11 @@ function displayAnalysis(analysis) {
         const url = new URL(window.location);
         url.searchParams.set('job_id', analysis.id);
         window.history.replaceState({}, '', url);
+    }
+
+    // --- NEW: Email Notification Toast ---
+    if (analysis.email && analysis.status === 'success') {
+        showToast("Report Sent", `Finalized findings emailed to ${analysis.email}`, 'fa-envelope-circle-check');
     }
 
     // Update KPIs and Charts

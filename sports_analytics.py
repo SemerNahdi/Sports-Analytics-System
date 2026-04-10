@@ -1,5 +1,5 @@
 """
-Sports Analytics System  v5
+Sports Analytics System  v6
 ======================================
 Refactored for data integrity, clean video output, and OpenSim compatibility.
 
@@ -368,7 +368,7 @@ class KalmanTrack:
         cx, cy = bbox_centre(bbox)
         z = np.array([cx, cy, bbox[2], bbox[3]], dtype=float)
         S = self.H @ self.P @ self.H.T + self.R
-        K = self.P @ self.H.T @ np.linalg.inv(S)
+        K = np.linalg.solve(S.T, (self.P @ self.H.T).T).T  # numerically stable vs inv(S)
         self.x = self.x + K @ (z - self.H @ self.x)
         self.P = (np.eye(8) - K @ self.H) @ self.P
         self.conf = conf
@@ -488,7 +488,12 @@ class SceneChangeDetector:
         self._thr = threshold
 
     def is_cut(self, frame) -> bool:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        h, w = frame.shape[:2]
+        # Use a centre-crop (80% of frame) to reduce sensitivity to edge banners / overlays
+        cy, cx = h // 2, w // 2
+        ch, cw = int(h * 0.4), int(w * 0.4)
+        crop = frame[cy - ch:cy + ch, cx - cw:cx + cw]
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         hist = cv2.calcHist([gray], [0], None, [64], [0, 256])
         cv2.normalize(hist, hist)
         if self._prev is None:
@@ -550,28 +555,56 @@ class ByteTracker:
                 iou = bbox_iou(tb, d['bbox'])
                 hs  = hist_sim(th, crop_hist(frame, d['bbox']))
                 cost[ti, di] = 1.0 - (iou * 0.60 + hs * 0.40)
+
+        # Use Hungarian matching when scipy is available
         mt, md = set(), set()
-        while True:
-            avail = [(ti, di) for ti in range(len(tracks)) for di in range(len(dets))
-                     if ti not in mt and di not in md]
-            if not avail:
-                break
-            ti, di = min(avail, key=lambda p: cost[p[0], p[1]])
-            if cost[ti, di] >= 1.0 - iou_thr:
-                break
-            mt.add(ti)
-            md.add(di)
-            t = tracks[ti]
-            d = dets[di]
-            t.update(d['bbox'], frame, d['conf'])
-            if reactivate:
-                t.reactivate(d['bbox'], frame)
-                if t in self.lost_tracks:
-                    self.lost_tracks.remove(t)
-                if t not in self.active_tracks:
-                    self.active_tracks.append(t)
-            if d.get('kp') is not None:
-                t._yolo_kp = d['kp']
+        if HAS_SCIPY:
+            try:
+                from scipy.optimize import linear_sum_assignment
+                row_ind, col_ind = linear_sum_assignment(cost)
+                for ti, di in zip(row_ind, col_ind):
+                    if cost[ti, di] < 1.0 - iou_thr:
+                        mt.add(ti)
+                        md.add(di)
+                        t = tracks[ti]
+                        d = dets[di]
+                        if reactivate:
+                            t.reactivate(d['bbox'], frame)
+                            if t in self.lost_tracks:
+                                self.lost_tracks.remove(t)
+                            if t not in self.active_tracks:
+                                self.active_tracks.append(t)
+                        else:
+                            t.update(d['bbox'], frame, d['conf'])
+                        if d.get('kp') is not None:
+                            t._yolo_kp = d['kp']
+            except ImportError:
+                pass
+
+        if not mt:  # fallback greedy
+            while True:
+                avail = [(ti, di) for ti in range(len(tracks)) for di in range(len(dets))
+                         if ti not in mt and di not in md]
+                if not avail:
+                    break
+                ti, di = min(avail, key=lambda p: cost[p[0], p[1]])
+                if cost[ti, di] >= 1.0 - iou_thr:
+                    break
+                mt.add(ti)
+                md.add(di)
+                t = tracks[ti]
+                d = dets[di]
+                if reactivate:
+                    t.reactivate(d['bbox'], frame)
+                    if t in self.lost_tracks:
+                        self.lost_tracks.remove(t)
+                    if t not in self.active_tracks:
+                        self.active_tracks.append(t)
+                else:
+                    t.update(d['bbox'], frame, d['conf'])
+                if d.get('kp') is not None:
+                    t._yolo_kp = d['kp']
+
         return (
             [tracks[i] for i in range(len(tracks)) if i not in mt],
             [dets[i]   for i in range(len(dets))   if i not in md],
@@ -814,42 +847,42 @@ def select_primary_player(video_path: str, sample_step: int = 6) -> Optional[dic
     tracks: List[dict] = []
     MAX_GAP = max(sample_step * 5, 30)
     fi = 0
-    while True:
+    while fi < total:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
         ret, frame = cap.read()
         if not ret:
             break
-        if fi % sample_step == 0:
-            for d in det.detect(frame):
-                blob = d['bbox']
-                bx, by, bw, bh = blob
-                matched = False
-                for tr in tracks:
-                    if fi - tr["lf"] > MAX_GAP:
-                        continue
-                    iou = bbox_iou(blob, tr["lb"])
-                    rw, rh = tr["ms"]
-                    ss = min(bw * bh, rw * rh) / (max(bw * bh, rw * rh) + 1e-6)
-                    if iou * 0.7 + ss * 0.3 > 0.15 and (iou > 0.10 or ss > 0.55):
-                        h = crop_hist(frame, blob)
-                        tr["n"] += 1
-                        if h is not None:
-                            tr["hs"].append(h)
-                        n = tr["n"]
-                        pw, ph = tr["ms"]
-                        tr["ms"] = ((pw * (n - 1) + bw) / n, (ph * (n - 1) + bh) / n)
-                        tr["lb"] = blob
-                        tr["lf"] = fi
-                        matched = True
-                        break
-                if not matched:
+        for d in det.detect(frame):
+            blob = d['bbox']
+            bx, by, bw, bh = blob
+            matched = False
+            for tr in tracks:
+                if fi - tr["lf"] > MAX_GAP:
+                    continue
+                iou = bbox_iou(blob, tr["lb"])
+                rw, rh = tr["ms"]
+                ss = min(bw * bh, rw * rh) / (max(bw * bh, rw * rh) + 1e-6)
+                if iou * 0.7 + ss * 0.3 > 0.15 and (iou > 0.10 or ss > 0.55):
                     h = crop_hist(frame, blob)
-                    tracks.append({
-                        "n": 1,
-                        "hs": [h] if h is not None else [],
-                        "ms": (float(bw), float(bh)),
-                        "lb": blob, "lf": fi, "sb": blob, "sf": fi,
-                    })
-        fi += 1
+                    tr["n"] += 1
+                    if h is not None:
+                        tr["hs"].append(h)
+                    n = tr["n"]
+                    pw, ph = tr["ms"]
+                    tr["ms"] = ((pw * (n - 1) + bw) / n, (ph * (n - 1) + bh) / n)
+                    tr["lb"] = blob
+                    tr["lf"] = fi
+                    matched = True
+                    break
+            if not matched:
+                h = crop_hist(frame, blob)
+                tracks.append({
+                    "n": 1,
+                    "hs": [h] if h is not None else [],
+                    "ms": (float(bw), float(bh)),
+                    "lb": blob, "lf": fi, "sb": blob, "sf": fi,
+                })
+        fi += sample_step
     cap.release()
     if not tracks:
         return None
@@ -1035,8 +1068,7 @@ class PoseKalmanSmoother:
             if nm not in self._kx:
                 self._kx[nm] = JointKalman()
                 self._ky[nm] = JointKalman()
-            object.__setattr__(out, nm,
-                               (self._kx[nm].update(raw[0]), self._ky[nm].update(raw[1])))
+            setattr(out, nm, (self._kx[nm].update(raw[0]), self._ky[nm].update(raw[1])))
         return out
 
 
@@ -1082,10 +1114,12 @@ def draw_gradient_bone(img, p1, p2, c1, c2, th, rt=0.):
 
 def draw_glow_joint(img, pt, r, col, ga=0.45):
     px, py = int(pt[0]), int(pt[1])
+    # Single composited glow pass — avoids N full-frame copies per joint
+    ov = img.copy()
     for rr in range(r + 6, r, -2):
-        ov = img.copy()
+        t = (rr - r) / 6.
         cv2.circle(ov, (px, py), rr, col, -1, cv2.LINE_AA)
-        cv2.addWeighted(ov, ga * (1 - (rr - r) / 6.), img, 1 - ga * (1 - (rr - r) / 6.), 0, img)
+    cv2.addWeighted(ov, ga * 0.5, img, 1 - ga * 0.5, 0, img)
     cv2.circle(img, (px, py), r,          (255, 255, 255), -1, cv2.LINE_AA)
     cv2.circle(img, (px, py), max(1, r-2), col,            -1, cv2.LINE_AA)
 
@@ -1161,7 +1195,9 @@ class BiomechanicsEngine:
         hd = kp.left_hip[1] - kp.right_hip[1]
         hw = dist2d(kp.left_hip, kp.right_hip) + 1e-9
         bf.pelvis_obliquity = math.degrees(math.atan2(abs(hd), hw))
-        bf.pelvis_rotation  = math.degrees(math.atan2(abs(hd), hw + 1e-6))
+        # Pelvis rotation: estimated from anterior/posterior hip offset (X only)
+        hdx = kp.left_hip[0] - kp.right_hip[0]
+        bf.pelvis_rotation  = math.degrees(math.atan2(abs(hdx), hw))
 
         bf.left_valgus_clinical  = self._clinical_valgus(kp.left_hip,  kp.left_knee,  kp.left_ankle)
         bf.right_valgus_clinical = self._clinical_valgus(kp.right_hip, kp.right_knee, kp.right_ankle)
@@ -1203,7 +1239,7 @@ class BiomechanicsEngine:
             raw = np.array([getattr(f, field) for f in self.frames], dtype=float)
             sm  = self._smooth(raw)
             for i, bf in enumerate(self.frames):
-                object.__setattr__(bf, field, float(sm[i]))
+                setattr(bf, field, float(sm[i]))
 
         md = max(4, int(self.fps * 0.18))
         la = np.array(self._la_y)
@@ -1888,11 +1924,15 @@ class AnalyticsPlotter:
         self.results_dir = results_dir
         self.player_id   = player_id
         os.makedirs(results_dir, exist_ok=True)
+        if HAS_MPL:
+            import matplotlib
+            try:
+                matplotlib.use("Agg")
+            except Exception:
+                pass  # backend already set; acceptable if Sports2D already switched it
 
     def _save(self, fig, name: str):
         """Save figure as both PNG (300 DPI) and SVG."""
-        import matplotlib
-        matplotlib.use("Agg")   # headless only for our file-save plots
         import matplotlib.pyplot as _plt
         base = os.path.join(self.results_dir, name)
         fig.savefig(base + ".png", dpi=300, bbox_inches="tight")
@@ -2154,12 +2194,14 @@ class SportsAnalyzer:
                  fps_override: Optional[float] = None,
                  pick: bool = False,
                  yolo_size: str = "m",
-                 player_height_m: float = 1.75):
+                 player_height_m: float = 1.75,
+                 player_mass_kg: float = 75.0):
         self.video_path         = video_path
         self.output_video_path  = output_video_path
         self.player_id          = player_id
         self.fps_override       = fps_override
         self.player_height_m    = player_height_m
+        self.player_mass_kg     = player_mass_kg
 
         self.pose_est   = HybridPoseEstimator()
         self.smoother   = PoseKalmanSmoother()
@@ -2266,16 +2308,13 @@ class SportsAnalyzer:
         # For Cloudinary compatibility, we prioritize reliability (mp4v) over browser-native codecs (avc1)
         # because Cloudinary will transcode it to a web-safe format automatically.
         for codec in ["mp4v", "avc1", "H264", "VP80", "X264", "DIVX", "MJPG"]:
-
             try:
                 fourcc = cv2.VideoWriter_fourcc(*codec)
                 writer = cv2.VideoWriter(path, fourcc, fps, (W, H))
                 if writer.isOpened():
-                    # Sanity check: write a dead frame
-                    dummy = np.zeros((H, W, 3), np.uint8)
-                    writer.write(dummy)
                     print(f"[VIDEO] Using codec: {codec}")
                     return writer
+                writer.release()
             except Exception:
                 continue
 
@@ -2301,7 +2340,7 @@ class SportsAnalyzer:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, ac, 1, cv2.LINE_AA)
 
         # Player badge above head
-        hx       = int(kp.hip_center[0])
+        hx       = int(kp.head[0])  # use head X, not hip, for correct lateral position
         head_y   = int(kp.head[1]) - 35
         badge    = f"  #{self.player_id}  "
         (tw, _), _ = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
@@ -2407,7 +2446,7 @@ class SportsAnalyzer:
                         np.clip(np.dot(v1, v2) / (n1 * n2), -1, 1)) > math.radians(28):
                     fm.direction_change = True
 
-        MASS_KG = 75.0
+        MASS_KG = getattr(self, 'player_mass_kg', 75.0)
         G = 9.81
         Cr = 4.0
         v = max(fm.speed, 0.1)
@@ -2429,7 +2468,7 @@ class SportsAnalyzer:
             fm.fatigue_index = max(0., min(1., (np.mean(s[:5]) - np.mean(s[-5:])) /
                                            (np.mean(s[:5]) + 1e-6)))
 
-        valgus_deg = (abs(fm.l_valgus_clinical) + abs(fm.r_valgus_clinical)) / 2.0
+        valgus_deg  = (abs(fm.l_valgus_clinical) + abs(fm.r_valgus_clinical)) / 2.0
         p_valgus    = clamp01(valgus_deg / 15.0)
         p_knee_asym = clamp01(abs(fm.left_knee_angle - fm.right_knee_angle) / 30.)
         p_accel     = clamp01(abs(fm.acceleration) / 12.)
@@ -2529,7 +2568,7 @@ class SportsAnalyzer:
         sc  = self.PIX_TO_M or 0.002
 
         s.total_frames    = len(fms)
-        s.duration_seconds = fms[-1].timestamp
+        s.duration_seconds = fms[-1].timestamp + (1.0 / (self._fps_cache or 30.))
 
         spds = np.array([f.speed for f in fms])
         s.avg_speed = float(np.mean(spds))
@@ -2541,7 +2580,7 @@ class SportsAnalyzer:
 
         s.avg_stride_length        = anz("stride_length")
         s.avg_step_time            = anz("step_time")
-        s.avg_cadence              = anz("cadence")
+        s.avg_cadence              = anz("cadence")  # strides per minute
         s.avg_flight_time          = anz("flight_time")
         s.estimated_energy_kcal_hr = float(np.mean([f.energy_expenditure for f in fms]))
         s.gait_symmetry_pct        = float(np.mean([f.gait_symmetry for f in fms]))
@@ -2709,11 +2748,7 @@ class SportsAnalyzer:
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, default=str)
         print(f"[EXPORT] data_output.json → {json_path}  ({len(unified_frames)} frames)")
-        
-        # ── Return payload for API usage ──
-        return payload
 
-        
         # ── CSV — flat time-series ────────────────────────────────────────────
         df = pd.DataFrame(unified_frames)
 
@@ -2748,6 +2783,8 @@ class SportsAnalyzer:
                 fps        = self._fps_cache,
             )
 
+        return payload
+
     # ── Legacy export helpers (kept for backward compatibility) ───────────────
 
     def export_json(self, path: str):
@@ -2778,7 +2815,7 @@ class SportsAnalyzer:
         bio = "sports2d" if HAS_SPORTS2D else "scipy" if HAS_SCIPY else "numpy"
         W   = 70
         lines = ["=" * W,
-                 f"SPORTS ANALYTICS v5 — Player #{s.player_id} [{dm}]".center(W),
+                 f"SPORTS ANALYTICS v6 — Player #{s.player_id} [{dm}]".center(W),
                  "=" * W, "",
                  "SESSION OVERVIEW", "-" * W,
                  f"  Duration        : {s.duration_seconds:>6.1f} s",
@@ -2789,7 +2826,7 @@ class SportsAnalyzer:
                  f"  Avg Speed       : {s.avg_speed:>6.2f} m/s",
                  f"  Max Speed       : {s.max_speed:>6.2f} m/s",
                  f"  Avg Stride      : {s.avg_stride_length:>6.2f} m",
-                 f"  Avg Cadence     : {s.avg_cadence:>6.0f} spm",
+                 f"  Avg Cadence     : {s.avg_cadence:>6.0f} strides/min",
                  f"  Avg Step Time   : {s.avg_step_time:>6.2f} s",
                  f"  Changes/Min     : {s.direction_change_freq:>6.1f}",
                  f"  Energy (avg)    : {s.estimated_energy_kcal_hr:>6.0f} W"]

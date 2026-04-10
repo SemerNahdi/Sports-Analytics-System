@@ -123,6 +123,7 @@ def main():
         pick              = run_our_picker,
         yolo_size         = args.yolo_size,
         player_height_m   = args.height,
+        player_mass_kg    = args.mass,
     )
 
     # STEP 1 — Sports2D

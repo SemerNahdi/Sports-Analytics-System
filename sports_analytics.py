@@ -6,7 +6,6 @@ Refactored for data integrity, clean video output, and OpenSim compatibility.
 Install:
     pip install ultralytics opencv-python numpy pandas scipy matplotlib
     pip install sports2d pose2sim          # for Sports2D pipeline
-    # ffmpeg must be on PATH for H.264 re-encoding (https://ffmpeg.org)
     # For OpenSim IK: conda install -c opensim-org opensim
 """
 
@@ -48,10 +47,26 @@ except (ImportError, Exception):
 HAS_SPORTS2D = False
 _s2d_angle   = None
 _s2d_seg     = None
+_SPORTS2D_PROCESS = None
 
 try:
-    from Sports2D import Sports2D as _Sports2DModule
-    HAS_SPORTS2D = True
+    # Sports2D's Python API import path varies by distribution/version.
+    # We support multiple import styles and normalize to a single callable.
+    try:
+        from Sports2D import Sports2D as _Sports2DModule  # common in some installs
+        _SPORTS2D_PROCESS = getattr(_Sports2DModule, "process", None)
+    except Exception:
+        _Sports2DModule = None
+
+    if _SPORTS2D_PROCESS is None:
+        try:
+            # Alternative: some versions expose a top-level module API.
+            import sports2d as _sports2d_mod  # type: ignore
+            _SPORTS2D_PROCESS = getattr(_sports2d_mod, "process", None)
+        except Exception:
+            _sports2d_mod = None
+
+    HAS_SPORTS2D = _SPORTS2D_PROCESS is not None
     try:
         from Pose2Sim.common import points_to_angles as _pta
         def _s2d_angle(p1, p2, p3):
@@ -302,7 +317,9 @@ def crop_hist(frame, bbox):
     if bw < 5 or bh < 5:
         return None
     hsv = cv2.cvtColor(frame[by:by + bh, bx:bx + bw], cv2.COLOR_BGR2HSV)
-    hist = cv2.calcHist([hsv], [0, 1], None, [18, 16], [0, 180, 0, 256])
+    # Slightly higher binning improves discriminative power for kit colors
+    # without making the histogram too sparse/noisy.
+    hist = cv2.calcHist([hsv], [0, 1], None, [32, 32], [0, 180, 0, 256])
     cv2.normalize(hist, hist)
     return hist
 
@@ -390,6 +407,10 @@ class KalmanTrack:
     def reactivate(self, bbox, frame):
         cx, cy = bbox_centre(bbox)
         self.x[:4] = [cx, cy, bbox[2], bbox[3]]
+        # Reset covariance on reactivation to avoid over-trusting stale state
+        # after long occlusions (reduces jitter/lag on reacquire).
+        self.P = np.diag([10., 10., 10., 10., 100., 100., 10., 10.])
+        self.x[4:] = 0.0
         self.missed = 0
         self.hit_streak = 1
         self.last_bbox = bbox
@@ -416,6 +437,12 @@ class DetectionLayer:
                 self._mode = "yolo"
             except Exception:
                 pass
+
+    def reset_bg(self):
+        """Reset background model (useful on scene cuts)."""
+        self._bg = cv2.createBackgroundSubtractorMOG2(
+            history=400, varThreshold=40, detectShadows=False
+        )
 
     @property
     def mode(self):
@@ -547,8 +574,12 @@ class ByteTracker:
     def _associate(self, tracks, dets, frame, iou_thr, reactivate=False):
         if not tracks or not dets:
             return list(tracks), list(dets)
-        cost = np.zeros((len(tracks), len(dets)), dtype=float)
-        for ti, t in enumerate(tracks):
+        
+        # We work with a static copy for matching to avoid IndexError if the original 
+        # list (e.g. self.lost_tracks) is modified during loop iteration (reactivation).
+        tracks_copy = list(tracks)
+        cost = np.zeros((len(tracks_copy), len(dets)), dtype=float)
+        for ti, t in enumerate(tracks_copy):
             tb = t.get_bbox()
             th = t.ref_hist
             for di, d in enumerate(dets):
@@ -566,7 +597,7 @@ class ByteTracker:
                     if cost[ti, di] < 1.0 - iou_thr:
                         mt.add(ti)
                         md.add(di)
-                        t = tracks[ti]
+                        t = tracks_copy[ti]
                         d = dets[di]
                         if reactivate:
                             t.reactivate(d['bbox'], frame)
@@ -583,7 +614,7 @@ class ByteTracker:
 
         if not mt:  # fallback greedy
             while True:
-                avail = [(ti, di) for ti in range(len(tracks)) for di in range(len(dets))
+                avail = [(ti, di) for ti in range(len(tracks_copy)) for di in range(len(dets))
                          if ti not in mt and di not in md]
                 if not avail:
                     break
@@ -592,7 +623,7 @@ class ByteTracker:
                     break
                 mt.add(ti)
                 md.add(di)
-                t = tracks[ti]
+                t = tracks_copy[ti]
                 d = dets[di]
                 if reactivate:
                     t.reactivate(d['bbox'], frame)
@@ -647,6 +678,12 @@ class TargetLock:
             self.bt.reset()
             self._target_id = None
             self._state = "searching"
+            # Scene cut: reset blob background model to avoid drift.
+            if _detection_layer is not None:
+                try:
+                    _detection_layer.reset_bg()
+                except Exception:
+                    pass
 
         dets   = _detection_layer.detect(frame)
         tracks = self.bt.update(dets, frame)
@@ -955,7 +992,15 @@ class HybridPoseEstimator:
         kp.left_foot   = (kp.left_ankle[0] + w * .07,  vy(self._VP["foot"]))
         kp.right_foot  = (kp.right_ankle[0] + w * .07, vy(self._VP["foot"]))
 
+        # Confidence hint: if YOLO keypoints are extremely sparse, downstream
+        # angle/risk metrics are likely to be physically meaningless.
+        yolo_confident = False
         if yolo_kp is not None and len(yolo_kp) == 17:
+            try:
+                valid = int(np.sum((yolo_kp[:, 0] > 1) & (yolo_kp[:, 1] > 1)))
+                yolo_confident = valid >= 8
+            except Exception:
+                yolo_confident = False
             def g(nm):
                 i = _COCO.get(nm)
                 if i is None:
@@ -997,6 +1042,7 @@ class HybridPoseEstimator:
             for side in ("left", "right"):
                 ank = getattr(kp, f"{side}_ankle")
                 object.__setattr__(kp, f"{side}_foot", (ank[0] + w * .04, ank[1] + h * .03))
+        object.__setattr__(kp, "_yolo_confident", bool(yolo_confident))
         return kp
 
     def _cwidths(self, frame, bbox):
@@ -1114,14 +1160,11 @@ def draw_gradient_bone(img, p1, p2, c1, c2, th, rt=0.):
 
 def draw_glow_joint(img, pt, r, col, ga=0.45):
     px, py = int(pt[0]), int(pt[1])
-    # Single composited glow pass — avoids N full-frame copies per joint
-    ov = img.copy()
+    # Glow is drawn on a per-frame overlay to avoid copying the full frame
+    # for every joint.
+    ov = img  # overlay buffer
     for rr in range(r + 6, r, -2):
-        t = (rr - r) / 6.
         cv2.circle(ov, (px, py), rr, col, -1, cv2.LINE_AA)
-    cv2.addWeighted(ov, ga * 0.5, img, 1 - ga * 0.5, 0, img)
-    cv2.circle(img, (px, py), r,          (255, 255, 255), -1, cv2.LINE_AA)
-    cv2.circle(img, (px, py), max(1, r-2), col,            -1, cv2.LINE_AA)
 
 
 def render_skeleton(frame, kp, risk_tint=0.):
@@ -1129,6 +1172,7 @@ def render_skeleton(frame, kp, risk_tint=0.):
     for a, b, c1, c2, th in BONE_DEFS:
         if a in kpd and b in kpd:
             draw_gradient_bone(frame, kpd[a], kpd[b], c1, c2, th, risk_tint)
+    glow = np.zeros_like(frame)
     sz = {
         "head": 4, "neck": 3,
         "left_shoulder": 4, "right_shoulder": 4,
@@ -1145,7 +1189,11 @@ def render_skeleton(frame, kp, risk_tint=0.):
                 _L if "left" in nm else _R if "right" in nm else _W,
                 (0, 0, 220), risk_tint * .5,
             )
-            draw_glow_joint(frame, kpd[nm], r, col)
+            draw_glow_joint(glow, kpd[nm], r, col)
+            px, py = int(kpd[nm][0]), int(kpd[nm][1])
+            cv2.circle(frame, (px, py), r,          (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(frame, (px, py), max(1, r-2), col,            -1, cv2.LINE_AA)
+    cv2.addWeighted(frame, 1.0, glow, 0.45 * 0.5, 0, frame)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1407,6 +1455,16 @@ class Sports2DRunner:
         video_abs = str(os.path.abspath(self.video_path))
         result_abs = str(os.path.abspath(self.result_dir))
 
+        # Sports2D CLI accepts `--visible_side auto front` (two tokens). In the
+        # Python config this should be a list like ["auto", "front"], not
+        # ["auto front"] (which can crash inside Sports2D).
+        vs = self.visible_side
+        if isinstance(vs, str):
+            vs_tokens = [t for t in vs.strip().split() if t]
+        else:
+            vs_tokens = list(vs)  # type: ignore[arg-type]
+        visible_side_cfg = vs_tokens if vs_tokens else ["auto", "front"]
+
         config = {
             # ── base: I/O, display, and what to save ──────────────────────────
             "base": {
@@ -1416,7 +1474,7 @@ class Sports2DRunner:
                 "nb_persons_to_detect":   1,
                 "person_ordering_method": self.person_ordering,
                 "first_person_height":    self.player_height_m,
-                "visible_side":           [self.visible_side],
+                "visible_side":           visible_side_cfg,
                 "load_trc_px":            "",
                 "compare":                False,
                 "time_range":             [],
@@ -1502,7 +1560,12 @@ class Sports2DRunner:
         }
 
         try:
-            _Sports2DModule.process(config)
+            if _SPORTS2D_PROCESS is None:
+                raise RuntimeError(
+                    "Sports2D Python API not available (could not resolve process()). "
+                    "Install/repair with: pip install sports2d pose2sim"
+                )
+            _SPORTS2D_PROCESS(config)
         except Exception as e:
             import traceback
             print(f"[S2D] Sports2D.process() failed: {e}")
@@ -1510,7 +1573,6 @@ class Sports2DRunner:
             return {}
 
         self.outputs = self._collect_outputs()
-        self._copy_videos_to_output()
         return self.outputs
 
     def _collect_outputs(self) -> dict:
@@ -1559,45 +1621,6 @@ class Sports2DRunner:
                 out["osim_setup"].append(f)
         return out
 
-    def _copy_videos_to_output(self):
-        """
-        Copy the Sports2D annotated video to Output/ with a clean name.
-        If ffmpeg is available, use stream-copy (instant, no quality loss,
-        fixes the container so the file opens everywhere).
-        Otherwise do a plain file copy — simple and always works.
-        """
-        import shutil, subprocess
-
-        output_dir = os.path.dirname(self.result_dir)  # e.g. Output/
-        copied = []
-
-        for raw in self.outputs.get("annotated_video", []):
-            if not os.path.isfile(raw) or os.path.getsize(raw) < 1000:
-                print(f"[S2D] Video missing or empty, skipping: {raw}")
-                continue
-
-            dest = os.path.join(output_dir, "sports2d_annotated.mp4")
-
-            # Prefer ffmpeg stream-copy: remuxes container, no re-encode
-            if shutil.which("ffmpeg"):
-                cmd = ["ffmpeg", "-y", "-i", raw,
-                       "-c", "copy", "-movflags", "+faststart", dest]
-                try:
-                    r = subprocess.run(cmd, capture_output=True, timeout=300)
-                    if r.returncode == 0 and os.path.getsize(dest) > 1000:
-                        print(f"[S2D] Video → {dest}  (ffmpeg stream-copy)")
-                        copied.append(dest)
-                        continue
-                except Exception:
-                    pass
-
-            # Plain copy fallback
-            shutil.copy2(raw, dest)
-            print(f"[S2D] Video → {dest}  (file copy — open with VLC if needed)")
-            copied.append(dest)
-
-        self.outputs["annotated_video_final"] = copied
-
     def get_seed_from_trc(self) -> Optional[dict]:
         """
         Read the first few frames of Sports2D's pixel-space TRC file and
@@ -1637,22 +1660,51 @@ class Sports2DRunner:
             if df.empty or len(df) < 2:
                 return None
 
-            # Find X/Y columns — TRC pixel files use column names like
-            # "Hip_Center" with sub-cols X Y Z, or merged as "Hip_Center.X"
-            x_cols = [c for c in df.columns if c.endswith(".X") or
-                      (c not in ("Frame#", "Time") and ".Y" not in c and ".Z" not in c
-                       and c.replace(".", "").replace("_", "").isalpha())]
-            # Simpler: just grab all numeric columns and average them
-            num = df.select_dtypes(include=[float, int])
-            if num.empty:
+            # Robust TRC parsing: infer marker base names from "<Marker>.<X|Y|Z>".
+            # We avoid relying on numeric column ordering, because missing markers
+            # can shift indices and break modulo assumptions.
+            cols = [c for c in df.columns if isinstance(c, str)]
+            bases = {}
+            for c in cols:
+                if c.endswith(".X") or c.endswith(".Y") or c.endswith(".Z"):
+                    base, axis = c.rsplit(".", 1)
+                    bases.setdefault(base, {})[axis] = c
+
+            if not bases:
                 return None
 
-            # Use first valid frame
-            row = num.iloc[0]
-            xs = [v for i, v in enumerate(row) if i % 3 == 0]  # X cols (every 3rd)
-            ys = [v for i, v in enumerate(row) if i % 3 == 1]  # Y cols
-            xs = [v for v in xs if not np.isnan(v) and v > 0]
-            ys = [v for v in ys if not np.isnan(v) and v > 0]
+            # Use first valid frame row; coerce to numeric where possible.
+            row = df.iloc[0]
+            def _val(col):
+                try:
+                    return float(pd.to_numeric(row.get(col), errors="coerce"))
+                except Exception:
+                    return float("nan")
+
+            preferred = ["Hip_Center", "Hip_Centre", "L_Hip", "R_Hip", "Left_Hip", "Right_Hip"]
+            xs: List[float] = []
+            ys: List[float] = []
+
+            def _add_marker(base: str):
+                ax = bases.get(base, {})
+                xcol = ax.get("X")
+                ycol = ax.get("Y")
+                if not xcol or not ycol:
+                    return
+                x = _val(xcol)
+                y = _val(ycol)
+                if not np.isnan(x) and not np.isnan(y) and x > 0 and y > 0:
+                    xs.append(x)
+                    ys.append(y)
+
+            # Prefer hip-based markers (most stable for bbox seeding).
+            for b in preferred:
+                _add_marker(b)
+
+            # Fallback: use all markers with valid X/Y.
+            if not xs or not ys:
+                for b in bases.keys():
+                    _add_marker(b)
 
             if not xs or not ys:
                 return None
@@ -2402,6 +2454,43 @@ class SportsAnalyzer:
         kp  = pf.kp
         sc  = self.PIX_TO_M or 0.002
 
+        # If pose is low-confidence (e.g., sparse YOLO keypoints), avoid producing
+        # biologically invalid angles/risks. We keep kinematics/risk fields stable
+        # by carrying forward the last valid metrics, while still updating speed.
+        if getattr(kp, "_yolo_confident", True) is False and self.frame_metrics:
+            prev_fm = self.frame_metrics[-1]
+            fm.left_knee_angle = prev_fm.left_knee_angle
+            fm.right_knee_angle = prev_fm.right_knee_angle
+            fm.left_hip_angle = prev_fm.left_hip_angle
+            fm.right_hip_angle = prev_fm.right_hip_angle
+            fm.trunk_lean = prev_fm.trunk_lean
+            fm.perspective_confidence = prev_fm.perspective_confidence
+            fm.l_valgus_clinical = prev_fm.l_valgus_clinical
+            fm.r_valgus_clinical = prev_fm.r_valgus_clinical
+            fm.l_valgus = prev_fm.l_valgus
+            fm.r_valgus = prev_fm.r_valgus
+            fm.energy_expenditure = prev_fm.energy_expenditure
+            fm.joint_stress = prev_fm.joint_stress
+            fm.fatigue_index = prev_fm.fatigue_index
+            fm.injury_risk = prev_fm.injury_risk
+            fm.risk_score = prev_fm.risk_score
+            fm.fall_risk = prev_fm.fall_risk
+
+            if len(self.pose_frames) >= 2:
+                prev = self.pose_frames[-2]
+                dt   = ts - prev.timestamp + 1e-9
+                dp   = dist2d(kp.hip_center, prev.kp.hip_center) * sc
+                raw  = dp / dt
+                self._spd_win.append(raw)
+                fm.speed            = float(np.mean(self._spd_win))
+                fm.body_center_disp = dp
+                if len(self.pose_frames) >= 3:
+                    p2  = self.pose_frames[-3]
+                    dp2 = dist2d(prev.kp.hip_center, p2.kp.hip_center) * sc
+                    dt2 = prev.timestamp - p2.timestamp + 1e-9
+                    fm.acceleration = (raw - dp2 / dt2) / dt
+            return fm
+
         fm.left_knee_angle  = _s2d_joint_angle(kp.left_hip,  kp.left_knee,  kp.left_ankle)
         fm.right_knee_angle = _s2d_joint_angle(kp.right_hip, kp.right_knee, kp.right_ankle)
         fm.left_hip_angle   = _s2d_joint_angle(kp.left_shoulder,  kp.left_hip,  kp.left_knee)
@@ -2480,7 +2569,6 @@ class SportsAnalyzer:
         raw_risk = (0.60 * fm.injury_risk + 0.40 * cumulative) * fm.perspective_confidence
         self._risk_win.append(raw_risk)
         fm.risk_score = float(np.mean(self._risk_win)) * 100.
-        fm.fall_risk  = 0.
         return fm
 
     # ── Post-processing ───────────────────────────────────────────────────────

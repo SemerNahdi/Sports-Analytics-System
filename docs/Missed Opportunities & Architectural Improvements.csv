@@ -1,0 +1,7 @@
+﻿Area,Opportunity,Why It Matters
+Configuration Management,All thresholds (HIGH_THRESH", "FILTER_HZ", "+80.0" BMR, "155° knee cap) are hardcoded.,"Makes clinical validation, A/B testing, and multi-sport adaptation painful. Move to a "config.yaml with pydantic or dataclasses validation.
+Sports2D Execution,_Sports2DModule.process(config) runs synchronously in the main thread.,Blocks UI/callbacks for 30-90s on long videos. Run in a subprocess or concurrent.futures with progress polling.
+Progress/Callbacks,No "on_progress(frame, total)" or logging during process_video().,Users think the pipeline hung on 4K/60fps videos. Add a simple callback interface or tqdm integration.
+TRC/MOT Export,Manual string formatting for OpenSim files.,Prone to spec drift. Use pandas + numpy.savetxt or the official opensim Python API for guaranteed compliance.
+Risk Model Calibration,+80.0" baseline, "155°" knee stress cap, and "0.60/0.40 weighting are arbitrary.,"Reduces clinical credibility. Parameterize with literature-backed defaults (Minetti, GaitLab, ISB standards) and expose via config."
+Testing & CI,Zero unit tests or mock data pipelines.,"Refactors (e.g., Kalman gain, TRC parsing) can silently break biomechanics. Add "pytest with synthetic .mp4 + .trc fixtures.

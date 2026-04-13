@@ -19,7 +19,7 @@ import os
 import sys
 from pathlib import Path
 
-from sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D
+from src.analytics.sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D
 
 
 def create_parser() -> argparse.ArgumentParser:

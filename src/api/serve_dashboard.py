@@ -6,7 +6,7 @@ import sys
 # Define port and directory
 # Use PORT environment variable for Render compatibility
 PORT = int(os.environ.get("PORT", 8000))
-DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+DIRECTORY = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "dashboard")
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):

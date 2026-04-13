@@ -1,7 +1,7 @@
 # Core Analytics (Linux/Cloud-safe versions)
 ultralytics
 opencv-python-headless
-numpy
+numpy<2.0.0
 pandas
 scipy
 scikit-learn

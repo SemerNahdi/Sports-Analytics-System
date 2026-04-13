@@ -432,8 +432,23 @@ class DetectionLayer:
         self._mode = "blob"
         if HAS_YOLO:
             try:
+                # Look for models in root/models/ or local models/
+                # We try several paths to be robust
                 mn = f"yolo11{model_size}-pose.pt"
-                self._yolo = _YOLO(mn)
+                potential_paths = [
+                    mn,
+                    os.path.join("models", mn),
+                    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "models", mn), # ../../../models/ (if in src/analytics)
+                    os.path.join(os.path.dirname(__file__), "..", "..", "models", mn) # ../../models/
+                ]
+                
+                model_path = mn
+                for p in potential_paths:
+                    if os.path.exists(p):
+                        model_path = p
+                        break
+                
+                self._yolo = _YOLO(model_path)
                 self._mode = "yolo"
             except Exception:
                 pass

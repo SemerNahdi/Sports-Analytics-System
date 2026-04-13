@@ -29,7 +29,7 @@ import cloudinary.uploader
 from cloudinary.utils import cloudinary_url
 
 # Import the analytics core lazily in the endpoint to speed up startup on Render
-# from sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D
+# from src.analytics.sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D
 
 # Load environment variables
 load_dotenv()
@@ -212,7 +212,8 @@ def send_analysis_email(to_email: str, job_id: str, player_id: int, video_url: s
 
 # ── API Endpoints ─────────────────────────────────────────────────────────────
 
-static_dir = os.path.join(os.path.dirname(__file__), "static_ui")
+# static_dir is now in the project root as 'dashboard'
+static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "dashboard")
 
 @app.get("/")
 async def root():
@@ -256,7 +257,7 @@ def run_full_analysis_job(
     log_step("Initializing AI environment...")
     
     # Lazy import to prevent blocking startup during port binding
-    from sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D
+    from src.analytics.sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D
 
     # Use a temporary directory for processing - ensures NO local leftover files
     with tempfile.TemporaryDirectory() as temp_dir:

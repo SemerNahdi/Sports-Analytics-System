@@ -1,0 +1,23 @@
+# .dockerignore
+.git
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+bin/
+lib/
+share/
+Include/
+.pytest_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
+docs/
+assets/
+dashboard/image.png

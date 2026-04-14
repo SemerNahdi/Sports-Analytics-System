@@ -242,6 +242,18 @@
         let pollInterval = null;
         let lastLogIndex = 0;
 
+        // Resume analysis on page load if one was in progress
+        window.addEventListener('load', () => {
+            const activeJobId = localStorage.getItem('mitus_active_job_id');
+            if (activeJobId) {
+                console.log("Resuming analysis for job:", activeJobId);
+                uploadView.style.display = 'none';
+                processingView.style.display = 'flex';
+                addLog("Resuming analysis for job: " + activeJobId.substring(0, 8));
+                pollInterval = setInterval(() => pollStatus(activeJobId), 2500);
+            }
+        });
+
         function addLog(msg) {
             const div = document.createElement('div');
             div.className = 'fade-in';
@@ -283,6 +295,7 @@
 
                 if (data.status === 'success') {
                     clearInterval(pollInterval);
+                    localStorage.removeItem('mitus_active_job_id');
                     progressBar.style.width = '100%';
                     progressPercent.innerText = '100%';
                     currentStatus.innerText = "PIPELINE COMPLETED";
@@ -292,6 +305,7 @@
                     }, 1000);
                 } else if (data.status === 'failed') {
                     clearInterval(pollInterval);
+                    localStorage.removeItem('mitus_active_job_id');
                     currentStatus.innerText = "ANALYSIS FAILED";
                     currentStatus.style.color = "#ef4444";
                     loaderText.innerText = data.error || "A critical error occurred in the AI engine.";
@@ -329,6 +343,7 @@
                 if (response.status === 202 || response.ok) {
                     addLog("Stream accepted by AI gateway.");
                     addLog("Job UUID: " + data.job_id);
+                    localStorage.setItem('mitus_active_job_id', data.job_id);
                     pollInterval = setInterval(() => pollStatus(data.job_id), 2500);
                 } else {
                     throw new Error(data.detail || 'Analysis failed to start');

@@ -6,8 +6,9 @@ import json
 import shutil
 import tempfile
 import glob
+import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 # Fix for SSL_CERT_FILE issue: if it's set to a non-existent path, httpx (used by supabase) will fail.
 if "SSL_CERT_FILE" in os.environ and not os.path.exists(os.environ["SSL_CERT_FILE"]):
@@ -67,6 +68,10 @@ app.add_middleware(
 )
 
 # Helpers (moved up)
+
+# --- GLOBAL STATE FOR JOB TRACKING ---
+# Stores {job_id: threading.Event()} to signal cancellation
+active_jobs: Dict[str, threading.Event] = {}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -264,7 +269,16 @@ def run_full_analysis_job(
 
     # Telemetry logger to push backend updates to the frontend
     job_logs = []
+    
+    # Initialize cancellation event for this job
+    cancel_event = threading.Event()
+    active_jobs[job_id] = cancel_event
+
     def log_step(msg):
+        # Check for cancellation before every major step
+        if cancel_event.is_set():
+            raise InterruptedError("Job cancelled by user.")
+
         print(f"[JOB {job_id[:8]}] {msg}")
         log_mem()
         job_logs.append(f"{datetime.datetime.now().strftime('%H:%M:%S')} - {msg}")
@@ -314,7 +328,7 @@ def run_full_analysis_job(
             )
             
             log_step("Commencing Pose Estimation & Tracking...")
-            summary = analyzer.process_video(stride=stride, target_height=target_height)
+            summary = analyzer.process_video(stride=stride, target_height=target_height, cancel_event=cancel_event)
             log_step(f"Tracking concluded. {len(analyzer.frame_metrics)} frames analyzed.")
             gc.collect()
 
@@ -412,15 +426,31 @@ def run_full_analysis_job(
         except Exception as e:
             import traceback
             traceback.print_exc()
-            log_step(f"FATAL ERROR: {str(e)}")
+            
+            # Use specific status if it was a cancellation
+            final_status = "cancelled" if isinstance(e, InterruptedError) else "failed"
+            error_msg = "Job cancelled by user." if isinstance(e, InterruptedError) else str(e)
+            
+            log_step(f"FATAL ERROR: {error_msg}")
             try:
                 supabase.table("analyses").update({
-                    "status": "failed",
-                    "error": str(e)
+                    "status": final_status,
+                    "error": error_msg
                 }).eq("id", job_id).execute()
             except:
                 pass
-            print(f"[JOB {job_id[:8]}] Failed with error: {e}")
+            print(f"[JOB {job_id[:8]}] {final_status.capitalize()} with error: {error_msg}")
+        
+        finally:
+            # Clean up the initial uploaded file
+            if os.path.exists(temp_input_path):
+                try:
+                    os.remove(temp_input_path)
+                except: pass
+
+            # Always clean up the job tracker
+            if job_id in active_jobs:
+                del active_jobs[job_id]
 
 @app.post("/analyze")
 async def analyze_video(
@@ -511,6 +541,39 @@ async def analyze_video(
             "job_id": job_id,
             "message": "Analysis queued successfully."
         }
+    )
+
+@app.post("/analyses/{job_id}/cancel")
+async def cancel_analysis(job_id: str):
+    """
+    Cancel a running or queued job.
+    """
+    if job_id in active_jobs:
+        print(f"[API] Signaling cancellation for job {job_id[:8]}...")
+        active_jobs[job_id].set()
+        
+        # Immediate DB update to reflect intent
+        try:
+            supabase.table("analyses").update({
+                "status": "cancelling",
+                "error": "User requested cancellation..."
+            }).eq("id", job_id).execute()
+        except: pass
+        
+        return {"status": "success", "message": "Cancellation signal sent."}
+    
+    # If not in active_jobs, it might be in the database as 'processing' or 'pending'
+    # we should still try to mark it as cancelled there.
+    try:
+        res = supabase.table("analyses").select("status").eq("id", job_id).execute()
+        if res.data and res.data[0]["status"] in ["processing", "pending"]:
+            supabase.table("analyses").update({"status": "cancelled"}).eq("id", job_id).execute()
+            return {"status": "success", "message": "Job marked as cancelled in database."}
+    except: pass
+
+    return JSONResponse(
+        status_code=404,
+        content={"status": "error", "message": "Job not found or not active."}
     )
 
 @app.get("/analyses")

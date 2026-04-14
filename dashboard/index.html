@@ -213,6 +213,12 @@
                     </div>
                 </div>
 
+                <div style="margin-top: 2rem;">
+                    <button id="cancelBtn" class="btn btn-secondary" style="border: 1px solid #ef4444; color: #ef4444; background: rgba(239, 68, 68, 0.05);">
+                        <i class="fa-solid fa-stop-circle" style="margin-right: 8px;"></i> Cancel Analysis
+                    </button>
+                </div>
+
                 <div id="eventStream" class="glass" style="margin-top: 3rem; width: 100%; max-width: 600px; border-radius: 16px; padding: 1.5rem; text-align: left;">
                     <h4 style="margin-bottom: 1rem; font-size: 0.8rem; text-transform: uppercase; color: var(--text-secondary); letter-spacing: 1px;">Telemetry Log</h4>
                     <div id="logItems" style="display: flex; flex-direction: column; gap: 8px;">
@@ -234,6 +240,7 @@
         const currentStatus = document.getElementById('currentStatus');
         const logItems = document.getElementById('logItems');
         const loaderText = document.getElementById('loaderText');
+        const cancelBtn = document.getElementById('cancelBtn');
 
         function toggleSidebar() {
             document.querySelector('.sidebar').classList.toggle('collapsed');
@@ -303,19 +310,58 @@
                     setTimeout(() => {
                         window.location.href = `dashboard.html?job_id=${jobId}`;
                     }, 1000);
-                } else if (data.status === 'failed') {
+                } else if (data.status === 'failed' || data.status === 'cancelled') {
                     clearInterval(pollInterval);
                     localStorage.removeItem('mitus_active_job_id');
-                    currentStatus.innerText = "ANALYSIS FAILED";
+                    currentStatus.innerText = data.status === 'cancelled' ? "ANALYSIS CANCELLED" : "ANALYSIS FAILED";
                     currentStatus.style.color = "#ef4444";
-                    loaderText.innerText = data.error || "A critical error occurred in the AI engine.";
+                    loaderText.innerText = data.error || (data.status === 'cancelled' ? "Job stopped by user." : "A critical error occurred in the AI engine.");
+                    
+                    // Show reset button or similar
                     submitBtn.disabled = false;
-                    addLog("CRITICAL ERROR: " + (data.error || "Engine Stopped"));
+                    cancelBtn.style.display = 'none';
+                    
+                    addLog(data.status === 'cancelled' ? "JOB STOPPED: User Aborted" : "CRITICAL ERROR: " + (data.error || "Engine Stopped"));
+                    
+                    // Allow returning to upload view after 3 seconds
+                    setTimeout(() => {
+                        if (confirm("Job " + data.status + ". Return to upload?")) {
+                            window.location.reload();
+                        }
+                    }, 3000);
                 }
             } catch (err) {
                 console.error("Polling Error:", err);
             }
         }
+
+        cancelBtn.onclick = async () => {
+            const jobId = localStorage.getItem('mitus_active_job_id');
+            if (!jobId) return;
+
+            if (!confirm("Are you sure you want to stop this analysis? Any unsaved progress will be lost.")) {
+                return;
+            }
+
+            cancelBtn.disabled = true;
+            cancelBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cancelling...';
+            
+            try {
+                const res = await fetch(`/analyses/${jobId}/cancel`, { method: 'POST' });
+                if (res.ok) {
+                    addLog("Cancellation request sent to AI Engine.");
+                } else {
+                    const err = await res.json();
+                    alert("Error: " + err.message);
+                    cancelBtn.disabled = false;
+                    cancelBtn.innerHTML = '<i class="fa-solid fa-stop-circle"></i> Cancel Analysis';
+                }
+            } catch (err) {
+                alert("Failed to reach server: " + err.message);
+                cancelBtn.disabled = false;
+                cancelBtn.innerHTML = '<i class="fa-solid fa-stop-circle"></i> Cancel Analysis';
+            }
+        };
 
         form.onsubmit = async (e) => {
             e.preventDefault();

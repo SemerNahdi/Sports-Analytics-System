@@ -13,6 +13,7 @@ import cv2
 import math
 import json
 import os
+import threading
 import numpy as np
 import pandas as pd
 from collections import deque
@@ -2309,7 +2310,7 @@ class SportsAnalyzer:
 
     # ── Video processing ──────────────────────────────────────────────────────
 
-    def process_video(self, stride: int = 1, target_height: int = 720) -> PlayerSummary:
+    def process_video(self, stride: int = 1, target_height: int = 720, cancel_event: Optional[threading.Event] = None) -> PlayerSummary:
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
             raise FileNotFoundError(self.video_path)
@@ -2334,6 +2335,11 @@ class SportsAnalyzer:
 
         idx = 0
         while True:
+            # Check for cancellation signal every frame
+            if cancel_event and cancel_event.is_set():
+                print(f"[ENGINE] Cancellation signal received at frame {idx}. Aborting...")
+                break
+
             ret, frame = cap.read()
             if not ret:
                 break
@@ -2380,6 +2386,10 @@ class SportsAnalyzer:
 
         cap.release()
         out.release()
+
+        # If we were cancelled, don't proceed to post-processing or summary
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Job was cancelled by the user.")
 
         # Build summary and process gait before potentially re-encoding
         if self.bio_engine:

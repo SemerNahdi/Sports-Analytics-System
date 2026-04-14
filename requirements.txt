@@ -17,3 +17,4 @@ python-multipart
 python-dotenv
 supabase
 cloudinary
+psutil

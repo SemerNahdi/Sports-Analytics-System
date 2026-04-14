@@ -71,27 +71,70 @@ function toggleSidebar() {
 
 // --- Data Fetching ---
 
+/**
+ * Cache Strategy: 
+ * 1. Check localStorage first
+ * 2. Display cached data immediately
+ * 3. Fetch from API in background to ensure data is fresh
+ */
+
+const CACHE_KEY_PREFIX = 'mitus_analysis_';
+const CACHE_HISTORY_KEY = 'mitus_history';
+
+function getCachedAnalysis(jobId) {
+    const cached = localStorage.getItem(CACHE_KEY_PREFIX + jobId);
+    return cached ? JSON.parse(cached) : null;
+}
+
+function setCachedAnalysis(analysis) {
+    if (analysis && analysis.id) {
+        localStorage.setItem(CACHE_KEY_PREFIX + analysis.id, JSON.stringify(analysis));
+        localStorage.setItem('mitus_latest_job_id', analysis.id);
+    }
+}
+
 async function loadByJobId(jobId) {
+    // 1. Try cache first
+    const cached = getCachedAnalysis(jobId);
+    if (cached) {
+        console.log("Loading analysis from cache:", jobId);
+        displayAnalysis(cached);
+    }
+
+    // 2. Fetch fresh data in background
     try {
         const response = await fetch(`${API_BASE}/analyses/${jobId}`);
         if (response.ok) {
             const analysis = await response.json();
+            setCachedAnalysis(analysis);
             displayAnalysis(analysis);
-        } else {
+        } else if (!cached) {
             console.error(`Analysis ${jobId} not found.`);
             loadLatest();
         }
     } catch (error) {
         console.error('Error fetching analysis:', error);
-        loadLatest();
+        if (!cached) loadLatest();
     }
 }
 
 async function loadLatest() {
+    // 1. Try to find the latest job ID from cache
+    const latestId = localStorage.getItem('mitus_latest_job_id');
+    if (latestId) {
+        const cached = getCachedAnalysis(latestId);
+        if (cached) {
+            console.log("Loading latest from cache:", latestId);
+            displayAnalysis(cached);
+        }
+    }
+
+    // 2. Fetch truly latest from API
     try {
         const response = await fetch(`${API_BASE}/analyses/latest`);
         if (response.ok) {
             const analysis = await response.json();
+            setCachedAnalysis(analysis);
             displayAnalysis(analysis);
         } else {
             console.log("No previous analyses found.");
@@ -103,33 +146,48 @@ async function loadLatest() {
 
 async function fetchHistory() {
     const list = document.getElementById('historyList');
+    
+    // 1. Load history from cache if available
+    const cachedHistory = localStorage.getItem(CACHE_HISTORY_KEY);
+    if (cachedHistory) {
+        renderHistory(JSON.parse(cachedHistory));
+    }
+
+    // 2. Fetch fresh history
     try {
         const response = await fetch(`${API_BASE}/analyses`);
         const data = await response.json();
-        
-        list.innerHTML = '';
-        if (data.length === 0) {
-            list.innerHTML = '<p class="meta">No history found</p>';
-            return;
-        }
-
-        data.forEach(item => {
-            const div = document.createElement('div');
-            div.className = 'history-item';
-            const date = new Date(item.created_at).toLocaleString();
-            div.innerHTML = `
-                <h4>Player #${item.player_id} - ${item.session_tags || 'Quick Scan'}</h4>
-                <div class="meta">${date} | ${item.yolo_size.toUpperCase()} Tracking</div>
-            `;
-            div.onclick = () => {
-                displayAnalysis(item);
-                toggleHistory();
-            };
-            list.appendChild(div);
-        });
+        localStorage.setItem(CACHE_HISTORY_KEY, JSON.stringify(data));
+        renderHistory(data);
     } catch (error) {
-        list.innerHTML = '<p class="meta">Error loading history</p>';
+        if (!cachedHistory) {
+            list.innerHTML = '<p class="meta">Error loading history</p>';
+        }
     }
+}
+
+function renderHistory(data) {
+    const list = document.getElementById('historyList');
+    list.innerHTML = '';
+    if (data.length === 0) {
+        list.innerHTML = '<p class="meta">No history found</p>';
+        return;
+    }
+
+    data.forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'history-item';
+        const date = new Date(item.created_at).toLocaleString();
+        div.innerHTML = `
+            <h4>Player #${item.player_id} - ${item.session_tags || 'Quick Scan'}</h4>
+            <div class="meta">${date} | ${item.yolo_size.toUpperCase()} Tracking</div>
+        `;
+        div.onclick = () => {
+            displayAnalysis(item);
+            toggleHistory();
+        };
+        list.appendChild(div);
+    });
 }
 
 function displayAnalysis(analysis) {

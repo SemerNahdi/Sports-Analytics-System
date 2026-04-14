@@ -798,14 +798,14 @@ class TargetLock:
 #  MODULE-LEVEL DETECTION SINGLETON
 # ══════════════════════════════════════════════════════════════════════════════
 
-_detection_layer: Optional[DetectionLayer] = None
+_detection_layers: dict[str, DetectionLayer] = {}
 
 
 def _get_detection_layer(model_size="m") -> DetectionLayer:
-    global _detection_layer
-    if _detection_layer is None:
-        _detection_layer = DetectionLayer(model_size)
-    return _detection_layer
+    global _detection_layers
+    if model_size not in _detection_layers:
+        _detection_layers[model_size] = DetectionLayer(model_size)
+    return _detection_layers[model_size]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2308,26 +2308,43 @@ class SportsAnalyzer:
 
     # ── Video processing ──────────────────────────────────────────────────────
 
-    def process_video(self) -> PlayerSummary:
+    def process_video(self, stride: int = 1, target_height: int = 720) -> PlayerSummary:
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
             raise FileNotFoundError(self.video_path)
 
         fps   = self.fps_override or cap.get(cv2.CAP_PROP_FPS) or 30.
         self._fps_cache = fps
-        W     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        H     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        W_orig = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        H_orig = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # Adaptive Resizing: speed up processing by resizing frame once at the start.
+        # This reduces YOLO latency and drawing time significantly for 4K/1080p sources.
+        scale = 1.0
+        if H_orig > target_height and target_height > 0:
+            scale = target_height / H_orig
+        
+        W, H = int(W_orig * scale), int(H_orig * scale)
         self._frame_height_px = H
 
-        out = self._create_writer(self.output_video_path, fps, W, H)
-        self.bio_engine = BiomechanicsEngine(fps=fps, pix_to_m=self.PIX_TO_M or 0.002)
+        out = self._create_writer(self.output_video_path, fps / stride, W, H)
+        self.bio_engine = BiomechanicsEngine(fps=fps / stride, pix_to_m=self.PIX_TO_M or 0.002)
 
         idx = 0
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
+            
+            if idx % stride != 0:
+                idx += 1
+                continue
+
+            # Resize frame for analysis and final video output
+            if scale != 1.0:
+                frame = cv2.resize(frame, (W, H), interpolation=cv2.INTER_AREA)
+
             ts   = idx / fps
             bbox = self.lock.update(frame)
 

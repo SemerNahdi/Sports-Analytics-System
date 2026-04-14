@@ -1,17 +1,17 @@
 import os
 import ssl
 import datetime
-
-# Fix for SSL_CERT_FILE issue: if it's set to a non-existent path, httpx (used by supabase) will fail.
-# We remove it from the environment if it's invalid so and ssl.create_default_context() uses system certs.
-if "SSL_CERT_FILE" in os.environ and not os.path.exists(os.environ["SSL_CERT_FILE"]):
-    os.environ.pop("SSL_CERT_FILE", None)
 import uuid
 import json
 import shutil
 import tempfile
 import glob
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List
+
+# Fix for SSL_CERT_FILE issue: if it's set to a non-existent path, httpx (used by supabase) will fail.
+if "SSL_CERT_FILE" in os.environ and not os.path.exists(os.environ["SSL_CERT_FILE"]):
+    os.environ.pop("SSL_CERT_FILE", None)
 from dataclasses import asdict
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -137,18 +137,28 @@ def upload_video_to_cloudinary(local_path: str, public_id: str) -> str:
         return ""
 
 def upload_directory_to_supabase(directory: str, prefix: str) -> dict:
-
-    """Recursively upload a directory to Supabase and return a dict of public URLs."""
+    """Recursively upload a directory to Supabase in parallel and return a dict of public URLs."""
     urls = {}
-    for root, _, files in os.walk(directory):
-        for file in files:
-            local_path = os.path.join(root, file)
-            # Create a relative path for Supabase
-            rel_path = os.path.relpath(local_path, directory).replace("\\", "/")
-            remote_path = f"{prefix}/{rel_path}"
-            url = upload_file_to_supabase(local_path, remote_path)
+    tasks = []
+    
+    # We use a ThreadPoolExecutor for concurrent uploads
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        for root, _, files in os.walk(directory):
+            for file in files:
+                local_path = os.path.join(root, file)
+                # Create a relative path for Supabase
+                rel_path = os.path.relpath(local_path, directory).replace("\\", "/")
+                remote_path = f"{prefix}/{rel_path}"
+                
+                # Submit upload task
+                tasks.append((rel_path, executor.submit(upload_file_to_supabase, local_path, remote_path)))
+        
+        # Collect results as they complete
+        for rel_path, future in tasks:
+            url = future.result()
             if url:
                 urls[rel_path] = url
+                
     return urls
 
 def send_analysis_email(to_email: str, job_id: str, player_id: int, video_url: str):
@@ -240,15 +250,23 @@ def run_full_analysis_job(
     session_tags: str,
     run_sports2d: bool,
     original_filename: str,
-    email: Optional[str] = None
+    email: Optional[str] = None,
+    stride: int = 2,
+    target_height: int = 720
 ):
     """
     The heavy-lifting background task that runs the AI analysis and uploads results.
     """
+    import psutil
+    def log_mem():
+        mem = psutil.virtual_memory()
+        print(f"[MEM] {mem.percent}% used | Available: {mem.available // (1024*1024)}MB")
+
     # Telemetry logger to push backend updates to the frontend
     job_logs = []
     def log_step(msg):
         print(f"[JOB {job_id[:8]}] {msg}")
+        log_mem()
         job_logs.append(f"{datetime.datetime.now().strftime('%H:%M:%S')} - {msg}")
         try:
             supabase.table("analyses").update({"logs": job_logs}).eq("id", job_id).execute()
@@ -296,7 +314,7 @@ def run_full_analysis_job(
             )
             
             log_step("Commencing Pose Estimation & Tracking...")
-            summary = analyzer.process_video()
+            summary = analyzer.process_video(stride=stride, target_height=target_height)
             log_step(f"Tracking concluded. {len(analyzer.frame_metrics)} frames analyzed.")
             gc.collect()
 
@@ -414,7 +432,9 @@ async def analyze_video(
     mass_kg: float = 75.0,
     session_tags: str = "performance-match",
     run_sports2d: bool = False,
-    email: Optional[str] = None
+    email: Optional[str] = None,
+    stride: int = 2,
+    target_height: int = 720
 ):
     """
     Asynchronous analysis endpoint:
@@ -479,7 +499,9 @@ async def analyze_video(
         session_tags,
         run_sports2d,
         file.filename,
-        email
+        email,
+        stride,
+        target_height
     )
 
     return JSONResponse(

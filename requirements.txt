@@ -1,10 +1,9 @@
-# Core Analytics (Linux/Cloud-safe versions)
+# Core Analytics
 ultralytics
 opencv-python-headless
 numpy<2.0.0
 pandas
 scipy
-scikit-learn
 matplotlib
 
 # Optional Pipeline Support
@@ -18,4 +17,3 @@ python-multipart
 python-dotenv
 supabase
 cloudinary
-httpx

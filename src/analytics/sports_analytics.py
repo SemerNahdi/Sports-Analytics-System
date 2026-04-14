@@ -666,7 +666,7 @@ class ByteTracker:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TargetLock:
-    def __init__(self, seed_bbox, seed_hist, seed_frame_idx):
+    def __init__(self, seed_bbox, seed_hist, seed_frame_idx, yolo_size="m"):
         self._seed_bbox    = seed_bbox
         self._ref_hist     = seed_hist
         self._seed_fi      = seed_frame_idx
@@ -679,6 +679,7 @@ class TargetLock:
         self._fi           = 0
         self.bt    = ByteTracker()
         self.scene = SceneChangeDetector()
+        self._det_layer = _get_detection_layer(yolo_size)
 
     @property
     def state(self):
@@ -694,13 +695,13 @@ class TargetLock:
             self._target_id = None
             self._state = "searching"
             # Scene cut: reset blob background model to avoid drift.
-            if _detection_layer is not None:
+            if self._det_layer is not None:
                 try:
-                    _detection_layer.reset_bg()
+                    self._det_layer.reset_bg()
                 except Exception:
                     pass
 
-        dets   = _detection_layer.detect(frame)
+        dets   = self._det_layer.detect(frame)
         tracks = self.bt.update(dets, frame)
         self._fi += 1
 
@@ -2287,12 +2288,12 @@ class SportsAnalyzer:
         self.sports2d_runner:    Optional[Sports2DRunner]     = None
         self._frame_height_px:   int = 0
 
-        det_layer = _get_detection_layer(yolo_size)
+        self._det_layer = _get_detection_layer(yolo_size)
 
         print("\n" + "=" * 50)
         print(" SPORTS ANALYTICS: ENGINE READY")
         print("-" * 50)
-        print(f" * POSE DETECTION:    {det_layer.mode.upper()}")
+        print(f" * POSE DETECTION:    {self._det_layer.mode.upper()}")
         print(f" * BIOMECHANICS:      {'SPORTS2D (Clinical-Grade)' if HAS_SPORTS2D else 'NUMPY (Math Fallback)'}")
         print(f" * SIGNAL FILTERING:  {'SCIPY (Advanced Signal)' if HAS_SCIPY else 'NUMPY (Basic Mean)'}")
         print(f" * PLOTTING:          {'MATPLOTLIB' if HAS_MPL else 'NOT AVAILABLE'}")
@@ -2304,7 +2305,7 @@ class SportsAnalyzer:
             primary = select_primary_player(video_path)
         if primary is None:
             raise RuntimeError("No player candidates found in video.")
-        self.lock = TargetLock(primary["seed_bbox"], primary["hist"], primary["seed_frame"])
+        self.lock = TargetLock(primary["seed_bbox"], primary["hist"], primary["seed_frame"], yolo_size=yolo_size)
 
     # ── Video processing ──────────────────────────────────────────────────────
 
@@ -2931,7 +2932,7 @@ class SportsAnalyzer:
 
     def get_report_string(self) -> str:
         s   = self.summary
-        dm  = _detection_layer.mode.upper() if _detection_layer else "BLOB"
+        dm  = self._det_layer.mode.upper() if hasattr(self, '_det_layer') and self._det_layer else "BLOB"
         bio = "sports2d" if HAS_SPORTS2D else "scipy" if HAS_SCIPY else "numpy"
         W   = 70
         lines = ["=" * W,

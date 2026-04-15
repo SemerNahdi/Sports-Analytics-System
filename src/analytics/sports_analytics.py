@@ -433,22 +433,36 @@ class DetectionLayer:
         self._mode = "blob"
         if HAS_YOLO:
             try:
-                # Look for models in root/models/ or local models/
-                # We try several paths to be robust
-                mn = f"yolo11{model_size}-pose.pt"
-                potential_paths = [
-                    mn,
-                    os.path.join("models", mn),
-                    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "models", mn), # ../../../models/ (if in src/analytics)
-                    os.path.join(os.path.dirname(__file__), "..", "..", "models", mn) # ../../models/
-                ]
-                
-                model_path = mn
+                # Prefer YOLOv8 pose checkpoints (faster / widely available),
+                # but keep yolo11 pose as a fallback for existing installs.
+                # Supports absolute paths via env var for deploys.
+                env_model = os.getenv("YOLO_MODEL_PATH") or os.getenv("YOLO_POSE_MODEL")
+                model_candidates = []
+                if env_model:
+                    model_candidates.append(env_model)
+                model_candidates.extend([
+                    f"yolov8{model_size}-pose.pt",
+                    f"yolo11{model_size}-pose.pt",
+                ])
+
+                potential_paths = []
+                for mn in model_candidates:
+                    potential_paths.extend([
+                        mn,
+                        os.path.join("models", mn),
+                        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "models", mn),  # ../../../models/
+                        os.path.join(os.path.dirname(__file__), "..", "..", "models", mn),  # ../../models/
+                    ])
+
+                model_path = None
                 for p in potential_paths:
                     if os.path.exists(p):
                         model_path = p
                         break
-                
+                if model_path is None:
+                    # Let ultralytics resolve/download if none found locally.
+                    model_path = model_candidates[0]
+
                 self._yolo = _YOLO(model_path)
                 self._mode = "yolo"
             except Exception:
@@ -2310,7 +2324,7 @@ class SportsAnalyzer:
 
     # ── Video processing ──────────────────────────────────────────────────────
 
-    def process_video(self, stride: int = 1, target_height: int = 720, cancel_event: Optional[threading.Event] = None) -> PlayerSummary:
+    def process_video(self, stride: int = 2, target_height: int = 640, cancel_event: Optional[threading.Event] = None) -> PlayerSummary:
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
             raise FileNotFoundError(self.video_path)

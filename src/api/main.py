@@ -58,6 +58,11 @@ app = FastAPI(
     description="Advanced Biomechanics & Tracking backend with Supabase Storage integration."
 )
 
+# Defaults for analysis speed optimizations (override via env)
+DEFAULT_YOLO_SIZE = os.getenv("YOLO_SIZE_DEFAULT", "n")
+DEFAULT_STRIDE = int(os.getenv("ANALYSIS_STRIDE", "2"))
+DEFAULT_TARGET_HEIGHT = int(os.getenv("ANALYSIS_TARGET_HEIGHT", "640"))
+
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
@@ -256,8 +261,8 @@ def run_full_analysis_job(
     run_sports2d: bool,
     original_filename: str,
     email: Optional[str] = None,
-    stride: int = 2,
-    target_height: int = 720
+    stride: int = DEFAULT_STRIDE,
+    target_height: int = DEFAULT_TARGET_HEIGHT
 ):
     """
     The heavy-lifting background task that runs the AI analysis and uploads results.
@@ -457,14 +462,14 @@ async def analyze_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     player_id: int = 1,
-    yolo_size: str = "m",
+    yolo_size: str = DEFAULT_YOLO_SIZE,
     player_height: float = 1.75,
     mass_kg: float = 75.0,
     session_tags: str = "performance-match",
     run_sports2d: bool = False,
     email: Optional[str] = None,
-    stride: int = 2,
-    target_height: int = 720
+    stride: int = DEFAULT_STRIDE,
+    target_height: int = DEFAULT_TARGET_HEIGHT
 ):
     """
     Asynchronous analysis endpoint:

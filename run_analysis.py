@@ -36,6 +36,10 @@ def create_parser() -> argparse.ArgumentParser:
                       help="Output annotated video filename (default: output_annotated.mp4)")
     core.add_argument("--player", type=int, default=1, help="Player ID label")
     core.add_argument("--fps", type=float, help="Override detected FPS")
+    core.add_argument("--stride", type=int, default=int(os.getenv("ANALYSIS_STRIDE", "2")),
+                      help="Process every Nth frame (default: 2 or $ANALYSIS_STRIDE)")
+    core.add_argument("--target-height", type=int, default=int(os.getenv("ANALYSIS_TARGET_HEIGHT", "640")),
+                      help="Downscale video to this height before analysis (default: 640 or $ANALYSIS_TARGET_HEIGHT)")
     core.add_argument("--height", type=float, default=1.75,
                       help="Player height in metres (default: 1.75)")
     core.add_argument("--mass", type=float, default=75.0,
@@ -45,8 +49,8 @@ def create_parser() -> argparse.ArgumentParser:
     tracker = parser.add_argument_group("Tracking Options")
     tracker.add_argument("--pick", action="store_true",
                          help="Use custom interactive picker (only if not using --sports2d)")
-    tracker.add_argument("--yolo-size", default="m", choices=["n", "s", "m", "l", "x"],
-                         help="YOLO model size for custom tracker (default: m)")
+    tracker.add_argument("--yolo-size", default=os.getenv("YOLO_SIZE_DEFAULT", "n"), choices=["n", "s", "m", "l", "x"],
+                         help="YOLO model size for custom tracker (default: n or $YOLO_SIZE_DEFAULT)")
 
     # Sports2D
     s2d = parser.add_argument_group("Sports2D Options (Recommended)")
@@ -115,7 +119,7 @@ def main():
         player_height_m=args.height,
     )
 
-    analyzer.process_video()
+    analyzer.process_video(stride=args.stride, target_height=args.target_height)
 
     # ── Step 2: Sports2D Pipeline (if requested) ─────────────────────────────
     if args.sports2d:

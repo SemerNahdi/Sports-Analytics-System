@@ -33,6 +33,36 @@ body {
     overflow-x: hidden;
 }
 
+/* Picker (noVNC iframe) */
+.picker-view {
+    display: none;
+    width: 100%;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.picker-frame {
+    width: 100%;
+    height: min(72vh, 820px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.35);
+}
+
+.picker-frame iframe {
+    width: 100%;
+    height: 100%;
+    border: 0;
+}
+
+.picker-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
 /* Glassmorphism Utilities */
 .glass {
     background: var(--bg-card);

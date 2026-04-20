@@ -14,9 +14,15 @@ RECOMMENDED (maximum value):
   --sports2d --s2d-pick          → always use Sports2D picker + unified outputs
 """
 
-import argparse
 import os
 import sys
+
+# Ensure project root is in path
+project_root = os.path.dirname(os.path.abspath(__file__))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+import argparse
 from pathlib import Path
 
 from src.analytics.sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D

@@ -1,5 +1,12 @@
 import os
+import sys
 import ssl
+
+# Ensure project root is in path for imports to work regardless of launch method
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import datetime
 import uuid
 import json
@@ -18,7 +25,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,6 +64,10 @@ app = FastAPI(
     title="Sports Analytics API",
     description="Advanced Biomechanics & Tracking backend with Supabase Storage integration."
 )
+
+# Picker sessions (Sports2D on_click via streamed GUI)
+from src.api.picker_sessions import PickerSessionManager
+picker_sessions = PickerSessionManager()
 
 # Defaults for analysis speed optimizations (override via env)
 DEFAULT_YOLO_SIZE = os.getenv("YOLO_SIZE_DEFAULT", "n")
@@ -260,9 +271,11 @@ def run_full_analysis_job(
     session_tags: str,
     run_sports2d: bool,
     original_filename: str,
+    s2d_source_dir: Optional[str] = None,
     email: Optional[str] = None,
     stride: int = DEFAULT_STRIDE,
-    target_height: int = DEFAULT_TARGET_HEIGHT
+    target_height: int = DEFAULT_TARGET_HEIGHT,
+    pick: bool = False
 ):
     """
     The heavy-lifting background task that runs the AI analysis and uploads results.
@@ -294,7 +307,7 @@ def run_full_analysis_job(
     log_step("Initializing AI environment...")
     
     # Lazy import to prevent blocking startup during port binding
-    from src.analytics.sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D
+    from src.analytics.sports_analytics import SportsAnalyzer, AnalyticsPlotter, HAS_SPORTS2D, Sports2DRunner, TargetLock
 
     # Use a temporary directory for processing - ensures NO local leftover files
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -329,8 +342,31 @@ def run_full_analysis_job(
                 player_id=player_id,
                 yolo_size=yolo_size,
                 player_height_m=player_height,
-                pick=False 
+                pick=pick
             )
+
+            # If picker session already produced Sports2D outputs, reuse them and seed lock.
+            if (run_sports2d or pick) and s2d_source_dir and os.path.isdir(s2d_source_dir):
+                try:
+                    s2d_dir = os.path.join(temp_dir, "Sports2D")
+                    if not (os.path.isdir(s2d_dir) and any(os.scandir(s2d_dir))):
+                        shutil.copytree(s2d_source_dir, s2d_dir, dirs_exist_ok=True)
+                    runner = Sports2DRunner(
+                        video_path=input_path,
+                        result_dir=s2d_dir,
+                        person_ordering="greatest_displacement", # Use automatic picking to avoid GUI crashes
+                        show_realtime=False, # Headless mode
+                        participant_mass_kg=mass_kg,
+                        player_height_m=player_height,
+                    )
+                    runner.outputs = runner._collect_outputs()
+                    analyzer.sports2d_runner = runner
+                    seed = runner.get_seed_from_trc()
+                    if seed is not None and seed.get("seed_bbox") is not None:
+                        analyzer.lock = TargetLock(seed["seed_bbox"], seed.get("hist"), seed.get("seed_frame", 0))
+                        log_step("Using manual picker outputs (no second click required).")
+                except Exception as reuse_err:
+                    log_step(f"Picker data reuse failed; falling back to automatic selection. Error: {reuse_err}")
             
             log_step("Commencing Pose Estimation & Tracking...")
             summary = analyzer.process_video(stride=stride, target_height=target_height, cancel_event=cancel_event)
@@ -341,11 +377,17 @@ def run_full_analysis_job(
             if run_sports2d:
                 log_step("Invoking deep clinical pipeline (Sports2D)...")
                 s2d_dir = os.path.join(temp_dir, "Sports2D")
-                analyzer.run_sports2d(
-                    result_dir=s2d_dir,
-                    mode="balanced",
-                    participant_mass_kg=mass_kg
-                )
+                # If a picker session already produced Sports2D outputs, reuse them
+                # to avoid forcing the user to click twice.
+                if os.path.isdir(s2d_dir) and any(os.scandir(s2d_dir)):
+                    # Already present (e.g. injected by /analyze when picker_session_id used)
+                    pass
+                else:
+                    analyzer.run_sports2d(
+                        result_dir=s2d_dir,
+                        mode="balanced",
+                        participant_mass_kg=mass_kg
+                    )
                 log_step("Clinical data extracted.")
                 gc.collect()
 
@@ -414,17 +456,22 @@ def run_full_analysis_job(
             # --- SEND EMAIL NOTIFICATION ---
             if email:
                 print(f"[JOB {job_id[:8]}] Queuing email notification...")
-                supabase.table("analyses").update({
-                    "logs": logs + [f"[{datetime.now().isoformat()}] - Dispatching report email to {email}..."]
-                }).eq("id", job_id).execute()
+                job_logs.append(f"{datetime.datetime.now().strftime('%H:%M:%S')} - Dispatching report email to {email}...")
+                try:
+                    supabase.table("analyses").update({
+                        "logs": job_logs
+                    }).eq("id", job_id).execute()
+                except: pass
                 
                 try:
                     send_analysis_email(email, job_id, player_id, video_url)
-                    logs.append(f"[{datetime.now().isoformat()}] - Email report delivered successfully.")
+                    job_logs.append(f"{datetime.datetime.now().strftime('%H:%M:%S')} - Email report delivered successfully.")
                 except Exception as eval_err:
-                    logs.append(f"[{datetime.now().isoformat()}] - Email Error: {str(eval_err)}")
+                    job_logs.append(f"{datetime.datetime.now().strftime('%H:%M:%S')} - Email Error: {str(eval_err)}")
                 
-                supabase.table("analyses").update({"logs": logs}).eq("id", job_id).execute()
+                try:
+                    supabase.table("analyses").update({"logs": job_logs}).eq("id", job_id).execute()
+                except: pass
 
             print(f"[JOB {job_id[:8]}] Successfully completed.")
 
@@ -460,16 +507,18 @@ def run_full_analysis_job(
 @app.post("/analyze")
 async def analyze_video(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    player_id: int = 1,
-    yolo_size: str = DEFAULT_YOLO_SIZE,
-    player_height: float = 1.75,
-    mass_kg: float = 75.0,
-    session_tags: str = "performance-match",
-    run_sports2d: bool = False,
-    email: Optional[str] = None,
-    stride: int = DEFAULT_STRIDE,
-    target_height: int = DEFAULT_TARGET_HEIGHT
+    file: Optional[UploadFile] = File(None),
+    picker_session_id: Optional[str] = Form(None),
+    player_id: int = Form(1),
+    yolo_size: str = Form(DEFAULT_YOLO_SIZE),
+    player_height: float = Form(1.75),
+    mass_kg: float = Form(75.0),
+    session_tags: str = Form("performance-match"),
+    run_sports2d: bool = Form(False),
+    email: Optional[str] = Form(None),
+    stride: int = Form(DEFAULT_STRIDE),
+    target_height: int = Form(DEFAULT_TARGET_HEIGHT),
+    pick: bool = Form(False)
 ):
     """
     Asynchronous analysis endpoint:
@@ -477,8 +526,29 @@ async def analyze_video(
     2. Returns '202 Accepted' with job_id immediately (avoids Render 502 timeout).
     3. Processes AI analysis in the BackgroundTask pool.
     """
-    if not file.content_type.startswith("video/"):
-        raise HTTPException(status_code=400, detail="File must be a video.")
+    # Resolve video source: either direct upload or a previously created picker session
+    temp_input_path = None
+    original_filename = None
+    s2d_source_dir = None
+
+    if picker_session_id:
+        sess = picker_sessions.get(picker_session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="Picker session not found.")
+        # Ensure the picker has finished so outputs exist
+        picker_sessions.finalize(picker_session_id)
+        if sess.status not in ("finished", "running"):
+            raise HTTPException(status_code=400, detail=f"Picker session not ready: {sess.status}")
+        temp_input_path = sess.video_path
+        original_filename = sess.original_filename
+        s2d_source_dir = sess.result_dir
+
+    if temp_input_path is None:
+        if file is None:
+            raise HTTPException(status_code=400, detail="Missing video upload or picker_session_id.")
+        if not file.content_type or not file.content_type.startswith("video/"):
+            raise HTTPException(status_code=400, detail="File must be a video.")
+        original_filename = file.filename
 
     job_id = str(uuid.uuid4())
     print(f"\n[JOB {job_id[:8]}] Attempting to initialize job record...")
@@ -514,13 +584,17 @@ async def analyze_video(
             content={"status": "error", "message": "Database Error", "detail": error_str}
         )
 
-    # Save a temporary copy of the file for the background worker
-    temp_dir_base = tempfile.gettempdir()
-    os.makedirs(os.path.join(temp_dir_base, "mitus_uploads"), exist_ok=True)
-    temp_input_path = os.path.join(temp_dir_base, "mitus_uploads", f"{job_id}_{file.filename}")
-
-    with open(temp_input_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    # Save a temporary copy of the file for the background worker (unless picker session already owns it)
+    if picker_session_id is None:
+        temp_dir_base = tempfile.gettempdir()
+        os.makedirs(os.path.join(temp_dir_base, "mitus_uploads"), exist_ok=True)
+        temp_input_path = os.path.join(temp_dir_base, "mitus_uploads", f"{job_id}_{original_filename}")
+        with open(temp_input_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    else:
+        # For picker sessions, we run analysis directly from the session's working dir.
+        # We also copy Sports2D outputs into the analysis temp dir later (inside job).
+        pass
 
     # Queue the heavy work
     background_tasks.add_task(
@@ -533,10 +607,12 @@ async def analyze_video(
         mass_kg,
         session_tags,
         run_sports2d,
-        file.filename,
+        original_filename,
+        s2d_source_dir,
         email,
         stride,
-        target_height
+        target_height,
+        pick
     )
 
     return JSONResponse(
@@ -547,6 +623,57 @@ async def analyze_video(
             "message": "Analysis queued successfully."
         }
     )
+
+
+@app.post("/picker/sessions")
+async def create_picker_session(file: UploadFile = File(...)):
+    if not file.content_type or not file.content_type.startswith("video/"):
+        raise HTTPException(status_code=400, detail="File must be a video.")
+
+    temp_dir_base = tempfile.gettempdir()
+    os.makedirs(os.path.join(temp_dir_base, "mitus_picker_uploads"), exist_ok=True)
+    temp_input_path = os.path.join(temp_dir_base, "mitus_picker_uploads", f"{uuid.uuid4()}_{file.filename}")
+    with open(temp_input_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    sess = picker_sessions.create_from_upload(temp_input_path, file.filename)
+    base_url = os.getenv("BASE_URL") or "http://localhost:8000"
+    return JSONResponse(status_code=201, content=picker_sessions.public_payload(sess, base_url))
+
+
+@app.get("/picker/sessions/{session_id}")
+async def get_picker_session(session_id: str):
+    sess = picker_sessions.poll(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Picker session not found.")
+    base_url = os.getenv("BASE_URL") or "http://localhost:8000"
+    return picker_sessions.public_payload(sess, base_url)
+
+
+@app.post("/picker/sessions/{session_id}/finalize")
+async def finalize_picker_session(session_id: str):
+    sess = picker_sessions.finalize(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Picker session not found.")
+    base_url = os.getenv("BASE_URL") or "http://localhost:8000"
+    return picker_sessions.public_payload(sess, base_url)
+
+
+@app.post("/picker/sessions/{session_id}/cancel")
+async def cancel_picker_session(session_id: str):
+    sess = picker_sessions.cancel(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Picker session not found.")
+    base_url = os.getenv("BASE_URL") or "http://localhost:8000"
+    return picker_sessions.public_payload(sess, base_url)
+
+
+@app.delete("/picker/sessions/{session_id}")
+async def cleanup_picker_session(session_id: str):
+    ok = picker_sessions.cleanup(session_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Picker session not found.")
+    return {"status": "success"}
 
 @app.post("/analyses/{job_id}/cancel")
 async def cancel_analysis(job_id: str):

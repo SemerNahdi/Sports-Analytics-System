@@ -79,6 +79,51 @@
             border-radius: 50%;
             animation: spin 1.5s linear reverse infinite;
         }
+
+        .picker-frame {
+            position: relative;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            aspect-ratio: 16 / 9;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        #novncFrame {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        .picker-loader {
+            position: absolute;
+            inset: 0;
+            background: rgba(6, 7, 10, 0.8);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            backdrop-filter: blur(4px);
+            transition: opacity 0.4s ease;
+        }
+
+        .picker-loader.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .spinner-small {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(0, 240, 255, 0.1);
+            border-top: 3px solid var(--accent-neon);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 1rem;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
@@ -159,11 +204,21 @@
                                         <input type="email" id="email" name="email" placeholder="e.g. coach@team.com" style="width: 100%;">
                                     </div> -->
                                 </div>
-                                <div class="checkbox-group" style="padding: 1rem; background: rgba(255,255,255,0.02); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
-                                    <input type="checkbox" id="run_sports2d" name="run_sports2d">
-                                    <div style="display: flex; flex-direction: column;">
-                                        <label for="run_sports2d" style="margin: 0; color: white;">Deep Biomechanics Pipeline</label>
-                                        <span style="font-size: 0.7rem; color: var(--text-secondary);">Enables joint torque and force estimation.</span>
+                                <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.5rem;">
+                                    <div class="checkbox-group" style="padding: 0.75rem; background: rgba(255,255,255,0.02); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
+                                        <input type="checkbox" id="run_sports2d" name="run_sports2d">
+                                        <div style="display: flex; flex-direction: column;">
+                                            <label for="run_sports2d" style="margin: 0; color: white;">Deep Biomechanics Pipeline</label>
+                                            <span style="font-size: 0.7rem; color: var(--text-secondary);">Enables joint torque and force estimation.</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="checkbox-group" style="padding: 0.75rem; background: rgba(255,255,255,0.02); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
+                                        <input type="checkbox" id="pick" name="pick">
+                                        <div style="display: flex; flex-direction: column;">
+                                            <label for="pick" style="margin: 0; color: white;">Manual Player Selection</label>
+                                            <span style="font-size: 0.7rem; color: var(--text-secondary);">Choose exactly which player to track (Recommended for match footage).</span>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -195,7 +250,56 @@
                 </div>
             </div>
 
-            <!-- STEP 2: PROCESSING STATE -->
+            <!-- STEP 2: SPORTS2D PICKER (noVNC) -->
+            <div id="pickerView" class="picker-view fade-in">
+                <header class="analysis-header" style="margin-bottom: 0;">
+                    <div>
+                        <a href="#" id="pickerBackLink" class="back-link"><i class="fa-solid fa-chevron-left"></i> Back</a>
+                        <h1 style="font-size: 2.2rem; margin-top: 0.5rem;">Select Player (Sports2D)</h1>
+                        <p style="color: var(--text-secondary); max-width: 900px;">
+                            Click the target player inside the Sports2D window, then return here and press “Continue”.
+                        </p>
+                    </div>
+                </header>
+
+                <div class="step-indicator" style="margin-bottom: 0;">
+                    <div class="step"><div class="step-num">1</div> Session Config</div>
+                    <div class="step active"><div class="step-num">2</div> Player Picker</div>
+                    <div class="step"><div class="step-num">3</div> AI Processing</div>
+                </div>
+
+                <div class="card glass" style="padding: 1.25rem;">
+                    <div style="display:flex; flex-direction: column; gap: 0.75rem;">
+                        <div style="display:flex; align-items:center; justify-content:space-between; gap: 1rem; flex-wrap:wrap;">
+                            <div>
+                                <div style="font-weight: 800; letter-spacing: 0.5px;">Interactive Picker</div>
+                                <div id="pickerMeta" style="color: var(--text-secondary); font-size: 0.85rem;">Starting…</div>
+                            </div>
+                            <div class="picker-actions">
+                                <button id="pickerCancelBtn" class="btn btn-secondary" style="border: 1px solid #ef4444; color: #ef4444; background: rgba(239, 68, 68, 0.05);">
+                                    <i class="fa-solid fa-xmark" style="margin-right: 8px;"></i> Cancel Picker
+                                </button>
+                                <button id="pickerContinueBtn" class="btn btn-primary">
+                                    <i class="fa-solid fa-arrow-right" style="margin-right: 8px;"></i> Continue
+                                </button>
+                            </div>
+                        </div>
+                        <div class="picker-frame">
+                            <div id="pickerLoader" class="picker-loader">
+                                <div class="spinner-small"></div>
+                                <span style="font-size: 0.8rem; font-weight: 600; color: white; letter-spacing: 0.5px;" id="pickerLoaderText">Initializing AI Engine...</span>
+                                <p style="font-size: 0.7rem; color: var(--text-secondary); margin-top: 5px;">This may take up to 30 seconds</p>
+                            </div>
+                            <iframe id="novncFrame" title="Sports2D Picker"></iframe>
+                        </div>
+                        <div style="color: var(--text-secondary); font-size: 0.8rem;">
+                            Tip: If the window looks too small, use the noVNC side panel to scale/resize.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- STEP 3: PROCESSING STATE -->
             <div id="processingView" class="processing-view fade-in">
                 <div class="loading-ring-large"></div>
                 <h1 id="loaderTitle" style="font-size: 2.5rem; margin-bottom: 1rem;">Neural Network Active</h1>
@@ -234,6 +338,7 @@
         const form = document.getElementById('analysisForm');
         const submitBtn = document.getElementById('submitBtn');
         const uploadView = document.getElementById('uploadView');
+        const pickerView = document.getElementById('pickerView');
         const processingView = document.getElementById('processingView');
         const progressBar = document.getElementById('progressBar');
         const progressPercent = document.getElementById('progressPercent');
@@ -241,6 +346,11 @@
         const logItems = document.getElementById('logItems');
         const loaderText = document.getElementById('loaderText');
         const cancelBtn = document.getElementById('cancelBtn');
+        const pickerContinueBtn = document.getElementById('pickerContinueBtn');
+        const pickerCancelBtn = document.getElementById('pickerCancelBtn');
+        const pickerBackLink = document.getElementById('pickerBackLink');
+        const novncFrame = document.getElementById('novncFrame');
+        const pickerMeta = document.getElementById('pickerMeta');
 
         function toggleSidebar() {
             document.querySelector('.sidebar').classList.toggle('collapsed');
@@ -248,6 +358,8 @@
 
         let pollInterval = null;
         let lastLogIndex = 0;
+        let pickerPollInterval = null;
+        let pickerSessionId = null;
 
         // Resume analysis on page load if one was in progress
         window.addEventListener('load', () => {
@@ -255,6 +367,7 @@
             if (activeJobId) {
                 console.log("Resuming analysis for job:", activeJobId);
                 uploadView.style.display = 'none';
+                if (pickerView) pickerView.style.display = 'none';
                 processingView.style.display = 'flex';
                 addLog("Resuming analysis for job: " + activeJobId.substring(0, 8));
                 pollInterval = setInterval(() => pollStatus(activeJobId), 2500);
@@ -363,6 +476,163 @@
             }
         };
 
+        function showUploadView() {
+            if (pickerPollInterval) clearInterval(pickerPollInterval);
+            uploadView.style.display = 'block';
+            pickerView.style.display = 'none';
+            processingView.style.display = 'none';
+            submitBtn.disabled = false;
+        }
+
+        function showPickerView() {
+            uploadView.style.display = 'none';
+            pickerView.style.display = 'flex';
+            processingView.style.display = 'none';
+        }
+
+        function showProcessingView() {
+            uploadView.style.display = 'none';
+            pickerView.style.display = 'none';
+            processingView.style.display = 'flex';
+        }
+
+        pickerBackLink.onclick = (e) => {
+            e.preventDefault();
+            if (confirm("Return to upload? This will cancel the picker session.")) {
+                if (pickerSessionId) {
+                    fetch(`/picker/sessions/${pickerSessionId}/cancel`, { method: 'POST' }).catch(() => {});
+                }
+                localStorage.removeItem('mitus_picker_session_id');
+                pickerSessionId = null;
+                showUploadView();
+            }
+        };
+
+        pickerCancelBtn.onclick = async () => {
+            if (!pickerSessionId) {
+                showUploadView();
+                return;
+            }
+            if (!confirm("Cancel Sports2D picker?")) return;
+            pickerCancelBtn.disabled = true;
+            pickerCancelBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cancelling...';
+            try {
+                await fetch(`/picker/sessions/${pickerSessionId}/cancel`, { method: 'POST' });
+            } catch (e) {}
+            localStorage.removeItem('mitus_picker_session_id');
+            pickerSessionId = null;
+            pickerCancelBtn.disabled = false;
+            pickerCancelBtn.innerHTML = '<i class="fa-solid fa-xmark"></i> Cancel Picker';
+            showUploadView();
+        };
+
+        const pickerLoader = document.getElementById('pickerLoader');
+        const pickerLoaderText = document.getElementById('pickerLoaderText');
+
+        async function pollPicker(sessionId) {
+            try {
+                const res = await fetch(`/picker/sessions/${sessionId}`);
+                if (res.status === 404) {
+                    console.warn("Picker session lost (server reload?). Resetting...");
+                    clearInterval(pickerPollInterval);
+                    localStorage.removeItem('mitus_picker_session_id');
+                    showUploadView();
+                    addLog("Session expired or lost due to server reload. Please retry.");
+                    return;
+                }
+                if (!res.ok) return;
+                const data = await res.json();
+                const st = (data.status || '').toUpperCase();
+                pickerMeta.innerText = `Session: ${sessionId.substring(0, 8)} • Status: ${st}`;
+                
+                // On Windows, explain that a popup window should appear
+                const isWindows = navigator.platform.indexOf('Win') > -1;
+                if (isWindows && st === 'RUNNING') {
+                    pickerLoaderText.innerText = "Look for a popup window on your desktop!";
+                    pickerLoader.classList.remove('hidden');
+                } else if (st === 'RUNNING') {
+                    pickerLoader.classList.add('hidden');
+                } else {
+                    pickerLoader.classList.remove('hidden');
+                    if (st === 'LOADING') {
+                        pickerLoaderText.innerText = "Starting Sports2D GUI...";
+                    } else if (st === 'CREATING') {
+                        pickerLoaderText.innerText = "Uploading & Allocating VNC...";
+                    }
+                }
+
+                if (st === 'FINISHED') {
+                    console.log("Picker finished detected in poll. Triggering continue...");
+                    pickerLoaderText.innerText = "Selection Captured! Starting Analysis...";
+                    pickerLoader.classList.remove('hidden');
+                    clearInterval(pickerPollInterval);
+                    
+                    // Give the UI a half second to show the "Captured" message
+                    setTimeout(() => {
+                        pickerContinueBtn.disabled = false;
+                        pickerContinueBtn.click();
+                    }, 500);
+                }
+                if (st === 'FAILED' || st === 'CANCELLED') {
+                    pickerMeta.innerText = `Picker ${data.status}. ${data.error || ''}`;
+                    pickerLoaderText.innerText = "Session " + st;
+                    pickerLoader.classList.remove('hidden');
+                    clearInterval(pickerPollInterval);
+                }
+            } catch (e) {
+                console.error("Poll Picker Error:", e);
+            }
+        }
+
+        pickerContinueBtn.onclick = async () => {
+            if (!pickerSessionId) return;
+            pickerContinueBtn.disabled = true;
+            pickerContinueBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Finalizing...';
+            try {
+                // Ensure the status is set before switching views
+                pickerLoaderText.innerText = "Finalizing Picker Data...";
+                pickerLoader.classList.remove('hidden');
+
+                const res = await fetch(`/picker/sessions/${pickerSessionId}/finalize`, { method: 'POST' });
+                const data = await res.json();
+                console.log("Finalize response:", data);
+
+                if (data && (data.status === 'finished' || data.status === 'running')) {
+                    // Start analysis
+                    showProcessingView();
+                    addLog("Picker data synchronized.");
+                    addLog("Starting Biomechanical Engine...");
+                    
+                    const fd = new FormData(form);
+                    fd.delete('file');
+                    fd.set('picker_session_id', pickerSessionId);
+                    fd.set('run_sports2d', document.getElementById('run_sports2d')?.checked ? 'true' : 'false');
+                    fd.set('pick', document.getElementById('pick')?.checked ? 'true' : 'false');
+
+                    const response = await fetch('/analyze', { method: 'POST', body: fd });
+                    const out = await response.json();
+                    
+                    if (response.ok || response.status === 202) {
+                        addLog("Job started: " + out.job_id);
+                        localStorage.setItem('mitus_active_job_id', out.job_id);
+                        localStorage.removeItem('mitus_picker_session_id');
+                        pollInterval = setInterval(() => pollStatus(out.job_id), 2500);
+                    } else {
+                        throw new Error(out.detail || out.message || 'Analysis failed to start');
+                    }
+                } else {
+                    alert("Picker session not ready (Status: " + data.status + "). Did you click on the player?");
+                    pickerContinueBtn.disabled = false;
+                    pickerContinueBtn.innerHTML = '<i class="fa-solid fa-arrow-right"></i> Continue';
+                }
+            } catch (err) {
+                console.error("Finalize Error:", err);
+                alert("Error finalizing: " + err.message);
+                pickerContinueBtn.disabled = false;
+                pickerContinueBtn.innerHTML = '<i class="fa-solid fa-arrow-right"></i> Continue';
+            }
+        };
+
         form.onsubmit = async (e) => {
             e.preventDefault();
             
@@ -373,18 +643,45 @@
             }
 
             submitBtn.disabled = true;
-            uploadView.style.display = 'none';
-            processingView.style.display = 'flex';
-            
-            addLog("Uploading high-resolution capture...");
-            
-            const formData = new FormData(form);
-            try {
-                const response = await fetch('/analyze', {
-                    method: 'POST',
-                    body: formData
-                });
 
+            const runSports2D = document.getElementById('run_sports2d')?.checked;
+            const pickManual = document.getElementById('pick')?.checked;
+            const formData = new FormData(form);
+
+            if (runSports2D || pickManual) {
+                // Step 2: create picker session (single upload) and embed noVNC
+                showPickerView();
+                pickerContinueBtn.disabled = true;
+                pickerMeta.innerText = "Uploading video to player picker…";
+
+                try {
+                    const pickerRes = await fetch('/picker/sessions', { method: 'POST', body: formData });
+                    const pickerData = await pickerRes.json();
+                    if (!pickerRes.ok) throw new Error(pickerData.detail || "Failed to start picker session");
+
+                    pickerSessionId = pickerData.session_id;
+                    localStorage.setItem('mitus_picker_session_id', pickerSessionId);
+                    pickerMeta.innerText = `Session: ${pickerSessionId.substring(0, 8)} • Status: ${(pickerData.status || '').toUpperCase()}`;
+                    if (pickerData.novnc_url) {
+                        novncFrame.src = pickerData.novnc_url;
+                    }
+
+                    if (pickerPollInterval) clearInterval(pickerPollInterval);
+                    pickerPollInterval = setInterval(() => pollPicker(pickerSessionId), 2000);
+                } catch (err) {
+                    alert("Error starting player picker: " + err.message);
+                    submitBtn.disabled = false;
+                    showUploadView();
+                }
+
+                return;
+            }
+
+            // No picker: run analysis directly (existing behavior)
+            showProcessingView();
+            addLog("Uploading high-resolution capture...");
+            try {
+                const response = await fetch('/analyze', { method: 'POST', body: formData });
                 const data = await response.json();
                 if (response.status === 202 || response.ok) {
                     addLog("Stream accepted by AI gateway.");
@@ -395,8 +692,7 @@
                     throw new Error(data.detail || 'Analysis failed to start');
                 }
             } catch (err) {
-                processingView.style.display = 'none';
-                uploadView.style.display = 'block';
+                showUploadView();
                 alert("Error initializing pipeline: " + err.message);
                 submitBtn.disabled = false;
             }

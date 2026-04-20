@@ -14,6 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     libxext6 \
     curl \
+    xvfb \
+    fluxbox \
+    x11vnc \
+    novnc \
+    websockify \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

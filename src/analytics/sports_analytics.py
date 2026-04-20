@@ -29,10 +29,7 @@ except ImportError:
 
 try:
     import matplotlib
-    # NOTE: Do NOT call matplotlib.use("Agg") here globally.
-    # Sports2D needs an interactive backend to show its native graphs.
-    # We set the backend lazily only when our own plotter saves files.
-    import matplotlib.pyplot as plt
+    # We do NOT import pyplot here globally to avoid backend lock-in
     HAS_MPL = True
 except ImportError:
     HAS_MPL = False
@@ -1458,6 +1455,7 @@ class Sports2DRunner:
                  participant_mass_kg: float = 75.0,
                  mode: str = "balanced",
                  show_realtime: bool = False,
+                 show_realtime_results: bool = False,
                  person_ordering: str = "greatest_displacement",
                  do_ik: bool = False,
                  use_augmentation: bool = False,
@@ -1468,6 +1466,7 @@ class Sports2DRunner:
         self.participant_mass_kg = participant_mass_kg
         self.mode                = mode
         self.show_realtime       = show_realtime
+        self.show_realtime_results = show_realtime_results
         self.person_ordering     = person_ordering
         self.do_ik               = do_ik
         self.use_augmentation    = use_augmentation
@@ -1511,7 +1510,7 @@ class Sports2DRunner:
                 "time_range":             [],
                 "webcam_id":              0,
                 "input_size":             [1280, 720],
-                "show_realtime_results":  self.show_realtime,
+                "show_realtime_results":  self.show_realtime_results,
                 "save_vid":               True,
                 "save_img":               False,
                 "save_pose":              True,
@@ -1561,7 +1560,7 @@ class Sports2DRunner:
                 "min_chunk_size":          10,
                 "reject_outliers":         True,
                 "filter":                  True,
-                "show_graphs":             self.show_realtime,  # mirrors realtime flag
+                "show_graphs":             False, # Always False to prevent popups
                 "save_graphs":             True,
                 "filter_type":             "butterworth",
                 "butterworth": {
@@ -1596,6 +1595,16 @@ class Sports2DRunner:
                     "Sports2D Python API not available (could not resolve process()). "
                     "Install/repair with: pip install sports2d pose2sim"
                 )
+            
+            # Force non-interactive backend for Matplotlib if we are in headless mode
+            # This prevents "set_wakeup_fd only works in main thread" errors on Windows.
+            if not self.show_realtime and not self.show_realtime_results:
+                try:
+                    import matplotlib
+                    matplotlib.use("Agg", force=True)
+                except:
+                    pass
+
             _SPORTS2D_PROCESS(config)
         except Exception as e:
             import traceback
@@ -2030,6 +2039,7 @@ class AnalyticsPlotter:
         speed = [f.speed     for f in frame_metrics]
         accel = [f.acceleration for f in frame_metrics]
 
+        import matplotlib.pyplot as plt
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 6), sharex=True)
         fig.suptitle(f"Player #{self.player_id} — Speed & Acceleration Profile", fontsize=13)
 
@@ -2059,6 +2069,7 @@ class AnalyticsPlotter:
         rh  = [f.right_hip_angle  for f in frame_metrics]
         trl = [f.trunk_lean       for f in frame_metrics]
 
+        import matplotlib.pyplot as plt
         fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True)
         fig.suptitle(f"Player #{self.player_id} — Joint Angle Timeseries", fontsize=13)
 
@@ -2087,10 +2098,12 @@ class AnalyticsPlotter:
     def plot_biomechanics(self, bio_engine: "BiomechanicsEngine"):
         if not bio_engine or not bio_engine.frames or not HAS_MPL:
             return
+        import matplotlib.pyplot as plt
         frames = bio_engine.frames
         ts     = [f.timestamp for f in frames]
 
         # ── Knee flexion ──────────────────────────────────────────────────────
+        import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(14, 4))
         ax.plot(ts, [f.left_knee_flexion  for f in frames], label="L Knee Flexion",
                 color="#FFB300", linewidth=1.4)
@@ -2122,6 +2135,7 @@ class AnalyticsPlotter:
         self._save(fig, "clinical_valgus")
 
         # ── Hip & ankle ───────────────────────────────────────────────────────
+        import matplotlib.pyplot as plt
         fig, axes = plt.subplots(2, 1, figsize=(14, 7), sharex=True)
         axes[0].plot(ts, [f.left_hip_flexion  for f in frames], label="L Hip", color="#FFB300", linewidth=1.4)
         axes[0].plot(ts, [f.right_hip_flexion for f in frames], label="R Hip", color="#0088FF", linewidth=1.4)
@@ -2202,6 +2216,7 @@ class AnalyticsPlotter:
     def plot_risk_scores(self, frame_metrics: List[FrameMetrics]):
         if not frame_metrics or not HAS_MPL:
             return
+        import matplotlib.pyplot as plt
         ts       = [f.timestamp    for f in frame_metrics]
         risk     = [f.risk_score   for f in frame_metrics]
         inj      = [f.injury_risk  for f in frame_metrics]
@@ -2234,6 +2249,7 @@ class AnalyticsPlotter:
     def plot_energy(self, frame_metrics: List[FrameMetrics]):
         if not frame_metrics or not HAS_MPL:
             return
+        import matplotlib.pyplot as plt
         ts     = [f.timestamp          for f in frame_metrics]
         energy = [f.energy_expenditure for f in frame_metrics]
 
